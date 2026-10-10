@@ -76,7 +76,7 @@ func TestRun_FinishesOnFirstToolCall(t *testing.T) {
 		MaxSteps: 5,
 	}
 
-	raw, stats, err := agent.Run(t.Context(), model, task, agent.NewBudget(1000))
+	raw, stats, err := agent.Run(t.Context(), model, task, &capCharger{max: 1000})
 	if err != nil {
 		t.Fatalf("Run() = %v, want nil error", err)
 	}
@@ -114,7 +114,7 @@ func TestRun_ReadFileThenFinish(t *testing.T) {
 		MaxSteps: 5,
 	}
 
-	raw, stats, err := agent.Run(t.Context(), model, task, agent.NewBudget(1000))
+	raw, stats, err := agent.Run(t.Context(), model, task, &capCharger{max: 1000})
 	if err != nil {
 		t.Fatalf("Run() = %v, want nil error", err)
 	}
@@ -152,7 +152,7 @@ func TestRun_ReadFileRefusesGitPath(t *testing.T) {
 		MaxSteps: 5,
 	}
 
-	if _, _, err := agent.Run(t.Context(), model, task, agent.NewBudget(1000)); err != nil {
+	if _, _, err := agent.Run(t.Context(), model, task, &capCharger{max: 1000}); err != nil {
 		t.Fatalf("Run() = %v, want nil error", err)
 	}
 }
@@ -183,7 +183,7 @@ func TestRun_UnknownToolDoesNotPanic(t *testing.T) {
 		MaxSteps: 5,
 	}
 
-	if _, _, err := agent.Run(t.Context(), model, task, agent.NewBudget(1000)); err != nil {
+	if _, _, err := agent.Run(t.Context(), model, task, &capCharger{max: 1000}); err != nil {
 		t.Fatalf("Run() = %v, want nil error", err)
 	}
 }
@@ -221,7 +221,7 @@ func TestRun_AcceptRejectionIsRetried(t *testing.T) {
 		MaxSteps: 5,
 	}
 
-	raw, _, err := agent.Run(t.Context(), model, task, agent.NewBudget(1000))
+	raw, _, err := agent.Run(t.Context(), model, task, &capCharger{max: 1000})
 	if err != nil {
 		t.Fatalf("Run() = %v, want nil error", err)
 	}
@@ -247,7 +247,7 @@ func TestRun_StepLimit(t *testing.T) {
 		MaxSteps: 2,
 	}
 
-	_, stats, err := agent.Run(t.Context(), model, task, agent.NewBudget(1000))
+	_, stats, err := agent.Run(t.Context(), model, task, &capCharger{max: 1000})
 	if !errors.Is(err, agent.ErrStepLimit) {
 		t.Fatalf("Run() err = %v, want ErrStepLimit", err)
 	}
@@ -256,7 +256,20 @@ func TestRun_StepLimit(t *testing.T) {
 	}
 }
 
-func TestRun_TokenBudget(t *testing.T) {
+var errOverCap = errors.New("over cap")
+
+// capCharger fails once the tokens charged exceed max.
+type capCharger struct{ max, used int }
+
+func (c *capCharger) Charge(u llm.Usage) error {
+	c.used += u.InputTokens + u.OutputTokens
+	if c.used > c.max {
+		return errOverCap
+	}
+	return nil
+}
+
+func TestRun_ChargeErrorEndsTheRunNamingTheStep(t *testing.T) {
 	t.Parallel()
 
 	model := &fakeModel{script: []func(llm.Request) (llm.Response, error){
@@ -271,9 +284,12 @@ func TestRun_TokenBudget(t *testing.T) {
 		MaxSteps: 5,
 	}
 
-	_, _, err := agent.Run(t.Context(), model, task, agent.NewBudget(1000))
-	if !errors.Is(err, agent.ErrTokenBudget) {
-		t.Fatalf("Run() err = %v, want ErrTokenBudget", err)
+	_, _, err := agent.Run(t.Context(), model, task, &capCharger{max: 1000})
+	if !errors.Is(err, errOverCap) {
+		t.Fatalf("Run() err = %v, want the charger's error", err)
+	}
+	if !strings.Contains(err.Error(), "charge step 1") {
+		t.Errorf("Run() err = %v, want it to name charge step 1", err)
 	}
 }
 
@@ -298,7 +314,7 @@ func TestRun_OffersExactlyTheFourTools(t *testing.T) {
 		Accept:   func(json.RawMessage) error { return nil },
 		MaxSteps: 1,
 	}
-	if _, _, err := agent.Run(t.Context(), model, task, agent.NewBudget(1000)); err != nil {
+	if _, _, err := agent.Run(t.Context(), model, task, &capCharger{max: 1000}); err != nil {
 		t.Fatalf("Run() = %v, want nil error", err)
 	}
 }
@@ -325,7 +341,7 @@ func TestRun_TextOnlyReplyGetsNudge(t *testing.T) {
 		Accept:   func(json.RawMessage) error { return nil },
 		MaxSteps: 3,
 	}
-	_, stats, err := agent.Run(t.Context(), model, task, agent.NewBudget(1000))
+	_, stats, err := agent.Run(t.Context(), model, task, &capCharger{max: 1000})
 	if err != nil {
 		t.Fatalf("Run() = %v, want nil error", err)
 	}
@@ -348,7 +364,7 @@ func TestRun_DeadlineIsErrDeadline(t *testing.T) {
 		model := &fakeModel{script: []func(llm.Request) (llm.Response, error){
 			func(llm.Request) (llm.Response, error) { return llm.Response{}, context.DeadlineExceeded },
 		}}
-		_, _, err := agent.Run(t.Context(), model, task, agent.NewBudget(1000))
+		_, _, err := agent.Run(t.Context(), model, task, &capCharger{max: 1000})
 		if !errors.Is(err, agent.ErrDeadline) || !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("Run() err = %v, want ErrDeadline wrapping DeadlineExceeded", err)
 		}
@@ -358,7 +374,7 @@ func TestRun_DeadlineIsErrDeadline(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
 		defer cancel()
-		_, _, err := agent.Run(ctx, &fakeModel{}, task, agent.NewBudget(1000))
+		_, _, err := agent.Run(ctx, &fakeModel{}, task, &capCharger{max: 1000})
 		if !errors.Is(err, agent.ErrDeadline) || !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("Run() err = %v, want ErrDeadline wrapping DeadlineExceeded", err)
 		}
@@ -379,7 +395,7 @@ func TestRun_CancelIsNotErrDeadline(t *testing.T) {
 		model := &fakeModel{script: []func(llm.Request) (llm.Response, error){
 			func(llm.Request) (llm.Response, error) { return llm.Response{}, context.Canceled },
 		}}
-		_, _, err := agent.Run(t.Context(), model, task, agent.NewBudget(1000))
+		_, _, err := agent.Run(t.Context(), model, task, &capCharger{max: 1000})
 		if errors.Is(err, agent.ErrDeadline) || !errors.Is(err, context.Canceled) {
 			t.Errorf("Run() err = %v, want Canceled and not ErrDeadline", err)
 		}
@@ -389,7 +405,7 @@ func TestRun_CancelIsNotErrDeadline(t *testing.T) {
 		t.Parallel()
 		ctx, cancel := context.WithCancel(t.Context())
 		cancel()
-		_, _, err := agent.Run(ctx, &fakeModel{}, task, agent.NewBudget(1000))
+		_, _, err := agent.Run(ctx, &fakeModel{}, task, &capCharger{max: 1000})
 		if errors.Is(err, agent.ErrDeadline) || !errors.Is(err, context.Canceled) {
 			t.Errorf("Run() err = %v, want Canceled and not ErrDeadline", err)
 		}
@@ -415,7 +431,7 @@ func TestRun_ThreeEmptyRepliesIsErrMalformed(t *testing.T) {
 	t.Parallel()
 
 	model := &fakeModel{script: []func(llm.Request) (llm.Response, error){emptyReply, emptyReply, emptyReply}}
-	_, _, err := agent.Run(t.Context(), model, emptyReplyTask(t), agent.NewBudget(1000))
+	_, _, err := agent.Run(t.Context(), model, emptyReplyTask(t), &capCharger{max: 1000})
 	if !errors.Is(err, agent.ErrMalformed) {
 		t.Fatalf("Run() = %v, want ErrMalformed", err)
 	}
@@ -428,7 +444,7 @@ func TestRun_TwoEmptyRepliesThenFinishSucceeds(t *testing.T) {
 	t.Parallel()
 
 	model := &fakeModel{script: []func(llm.Request) (llm.Response, error){emptyReply, emptyReply, finishReply}}
-	_, stats, err := agent.Run(t.Context(), model, emptyReplyTask(t), agent.NewBudget(1000))
+	_, stats, err := agent.Run(t.Context(), model, emptyReplyTask(t), &capCharger{max: 1000})
 	if err != nil {
 		t.Fatalf("Run() = %v, want nil error", err)
 	}
@@ -441,7 +457,7 @@ func TestRun_EmptyReplyAppendsNoEmptyAssistantMessage(t *testing.T) {
 	t.Parallel()
 
 	model := &fakeModel{script: []func(llm.Request) (llm.Response, error){emptyReply, finishReply}}
-	if _, _, err := agent.Run(t.Context(), model, emptyReplyTask(t), agent.NewBudget(1000)); err != nil {
+	if _, _, err := agent.Run(t.Context(), model, emptyReplyTask(t), &capCharger{max: 1000}); err != nil {
 		t.Fatalf("Run() = %v, want nil error", err)
 	}
 	for _, m := range model.calls[1].Messages {
@@ -482,7 +498,7 @@ func TestRun_LogsStepsAndTotals(t *testing.T) {
 		Log:      slog.New(slog.NewJSONHandler(&buf, nil)).With("repo", "o/r", "pr", 7),
 	}
 
-	if _, _, err := agent.Run(t.Context(), model, task, agent.NewBudget(1000)); err != nil {
+	if _, _, err := agent.Run(t.Context(), model, task, &capCharger{max: 1000}); err != nil {
 		t.Fatalf("Run() = %v, want nil error", err)
 	}
 

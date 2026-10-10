@@ -1,4 +1,4 @@
-package llmrunner_test
+package pipeline_test
 
 import (
 	"testing"
@@ -6,7 +6,7 @@ import (
 	"github.com/mrkizildag/pollux-agent/backend/internal/review"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review/basedocs"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review/input"
-	"github.com/mrkizildag/pollux-agent/backend/internal/review/llmrunner"
+	"github.com/mrkizildag/pollux-agent/backend/internal/review/pipeline"
 )
 
 // The hunk listing has one line per changed file, in order; removed files and
@@ -22,10 +22,10 @@ func TestHunkRanges(t *testing.T) {
 	in := input.New(req, basedocs.Selection{})
 
 	want := "\"b.go\": 1-3, 9-9\n\"gone.go\": \n\"we\\\"ird.go\": 4-5\n"
-	if got := llmrunner.HunkRanges(in.Files); got != want {
+	if got := pipeline.HunkRanges(in.Files); got != want {
 		t.Errorf("HunkRanges() = %q, want %q", got, want)
 	}
-	if got := llmrunner.HunkRanges(input.New(review.Request{}, basedocs.Selection{}).Files); got != "" {
+	if got := pipeline.HunkRanges(input.New(review.Request{}, basedocs.Selection{}).Files); got != "" {
 		t.Errorf("HunkRanges(no files) = %q, want empty", got)
 	}
 }

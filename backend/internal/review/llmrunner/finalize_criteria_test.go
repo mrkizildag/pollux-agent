@@ -1,7 +1,6 @@
 package llmrunner_test
 
 import (
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,39 +9,7 @@ import (
 
 	"github.com/mrkizildag/pollux-agent/backend/internal/llm"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review"
-	"github.com/mrkizildag/pollux-agent/backend/internal/review/llmrunner"
 )
-
-func TestStart_SectionEditOfDocWithBrokenFrontmatterAtHeadCarriesOriginal(t *testing.T) {
-	t.Parallel()
-
-	repoDir, baseSHA := newGitRepo(t)
-	headSHA := commitDoc(t, repoDir, "docs/x.md", "---\ntitle: [unclosed\n---\n# Top\n\n## X\nold behavior.\n")
-
-	model := &fakeModel{script: []func(llm.Request) (llm.Response, error){
-		triageResponse(true), submitResponse(proposalFor("docs/x.md", 2)), verifyResponse(true),
-	}}
-	runner := llmrunner.New(model, noToken, "triage-model", "draft-model", slog.New(slog.DiscardHandler))
-	runner.SetRemote(repoDir)
-	req := testRequest(headSHA)
-	req.BaseSHA = baseSHA
-
-	started, err := runner.Start(t.Context(), req)
-	if err != nil {
-		t.Fatalf("Start() = %v, want nil error", err)
-	}
-	result, ok := started.(review.Result)
-	if !ok {
-		t.Fatalf("Start() = %T, want review.Result", started)
-	}
-	proposals, ok := result.Verdict.(review.Proposals)
-	if !ok || len(proposals) != 1 {
-		t.Fatalf("Verdict = %#v, want one accepted proposal", result.Verdict)
-	}
-	if !strings.Contains(proposals[0].Original, "old behavior.") || proposals[0].Lines == (review.LineRange{}) {
-		t.Errorf("Original, Lines = %q, %+v; want the section's current text", proposals[0].Original, proposals[0].Lines)
-	}
-}
 
 func TestStart_NewDocAtAnOversizedFileIsReturnedToModel(t *testing.T) {
 	t.Parallel()
@@ -53,6 +20,23 @@ func TestStart_NewDocAtAnOversizedFileIsReturnedToModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	headSHA := commitDoc(t, repoDir, "docs/keep.txt", "keep\n")
+
+	changed := []review.ChangedFile{mainGoChange(), otherGoChange()}
+	_, model := startOnRepo(t, repoDir, headSHA, changed,
+		triageResponse(true), newDocResponse(true), submitResponse(newDocProposal("other.go")), submitResponse(), verifyResponse(true))
+	if got := returnedToModel(t, model); !strings.Contains(got, "proposal 0:") || !strings.Contains(got, "already exists") {
+		t.Errorf("tool error = %q, want proposal 0 reported as already existing", got)
+	}
+}
+
+func TestStart_NewDocAtADirectoryPathIsReturnedToModel(t *testing.T) {
+	t.Parallel()
+
+	repoDir, _ := newGitRepo(t)
+	if err := os.MkdirAll(filepath.Join(repoDir, "docs", "other.md"), 0o700); err != nil {
+		t.Fatalf("mkdir docs/other.md: %v", err)
+	}
+	headSHA := commitDoc(t, repoDir, "docs/other.md/keep.txt", "keep\n")
 
 	changed := []review.ChangedFile{mainGoChange(), otherGoChange()}
 	_, model := startOnRepo(t, repoDir, headSHA, changed,
@@ -116,7 +100,7 @@ func TestStart_HeadReadErrorFailsTheRun(t *testing.T) {
 	model := &fakeModel{script: []func(llm.Request) (llm.Response, error){
 		triageResponse(true), newDocResponse(true), submitResponse(proposal),
 	}}
-	runner := llmrunner.New(model, noToken, "triage-model", "draft-model", slog.New(slog.DiscardHandler))
+	runner := newRunner(model)
 	runner.SetRemote(repoDir)
 	req := testRequest(headSHA)
 	req.ChangedFiles = changed

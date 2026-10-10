@@ -20,9 +20,6 @@ import (
 // Task.Finish.
 var ErrStepLimit = errors.New("agent: step limit reached before the model finished")
 
-// ErrTokenBudget means a Budget's Charge pushed its usage past the cap.
-var ErrTokenBudget = errors.New("agent: token budget exceeded")
-
 // ErrDeadline means the run's context deadline passed. Cancellation is not a
 // deadline and never wraps this error.
 var ErrDeadline = errors.New("agent: deadline exceeded")
@@ -54,39 +51,17 @@ type Stats struct {
 	OutputTokens int
 }
 
-// Budget bounds the total tokens a Run may spend.
-type Budget struct {
-	max   int
-	total llm.Usage
+// Charger is what a run bills each model reply's usage to. Its error ends the
+// run, wrapped with the step ("charge step N: %w").
+type Charger interface {
+	Charge(u llm.Usage) error
 }
-
-// NewBudget returns a Budget that allows up to maxTokens total input and
-// output tokens.
-func NewBudget(maxTokens int) *Budget {
-	return &Budget{max: maxTokens}
-}
-
-// Charge adds u to the budget's running total, returning ErrTokenBudget once
-// the total exceeds the budget's cap.
-func (b *Budget) Charge(u llm.Usage) error {
-	b.total.InputTokens += u.InputTokens
-	b.total.OutputTokens += u.OutputTokens
-	b.total.CacheReadTokens += u.CacheReadTokens
-	b.total.CacheWriteTokens += u.CacheWriteTokens
-	if used := b.total.InputTokens + b.total.OutputTokens; used > b.max {
-		return fmt.Errorf("used %d tokens, budget %d: %w", used, b.max, ErrTokenBudget)
-	}
-	return nil
-}
-
-// Usage is everything charged to the budget so far, cache tokens included.
-func (b *Budget) Usage() llm.Usage { return b.total }
 
 // Run drives m through t's conversation: on each step it offers read_file, grep,
 // list_dir and t.Finish, executes any other tool call against t.Root, and ends when the
 // model calls t.Finish with arguments t.Accept accepts. A t.Accept error is
 // reported back to the model as a tool error, and the loop continues.
-func Run(ctx context.Context, m llm.Model, t Task, b *Budget) (json.RawMessage, Stats, error) {
+func Run(ctx context.Context, m llm.Model, t Task, b Charger) (json.RawMessage, Stats, error) {
 	if t.Log == nil {
 		t.Log = slog.New(slog.DiscardHandler)
 	}
@@ -101,7 +76,7 @@ func Run(ctx context.Context, m llm.Model, t Task, b *Budget) (json.RawMessage, 
 	return raw, stats, err
 }
 
-func run(ctx context.Context, m llm.Model, t Task, b *Budget) (json.RawMessage, Stats, error) {
+func run(ctx context.Context, m llm.Model, t Task, b Charger) (json.RawMessage, Stats, error) {
 	tools := append(readTools(), t.Finish)
 	messages := []llm.Message{{Role: llm.RoleUser, Text: t.Prompt}}
 	var stats Stats
@@ -126,7 +101,7 @@ func run(ctx context.Context, m llm.Model, t Task, b *Budget) (json.RawMessage, 
 		stats.InputTokens += resp.Usage.InputTokens
 		stats.OutputTokens += resp.Usage.OutputTokens
 		if err := b.Charge(resp.Usage); err != nil {
-			return nil, stats, err
+			return nil, stats, fmt.Errorf("charge step %d: %w", step+1, err)
 		}
 
 		for _, call := range resp.ToolCalls {

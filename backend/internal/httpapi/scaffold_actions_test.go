@@ -29,7 +29,6 @@ import (
 	"github.com/mrkizildag/pollux-agent/backend/internal/jobqueue"
 	"github.com/mrkizildag/pollux-agent/backend/internal/llm"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review/actions"
-	"github.com/mrkizildag/pollux-agent/backend/internal/review/llmrunner"
 )
 
 const scaffoldTip = "tip1"
@@ -369,8 +368,7 @@ func TestWebhookToActionsScaffoldPullRequest(t *testing.T) {
 
 func TestWebhookToActionsScaffoldPreferredOverServerRunner(t *testing.T) {
 	t.Parallel()
-	noToken := func(context.Context, int64, string) (string, error) { return "", nil }
-	testWebhookToActionsScaffoldPullRequest(t, llmrunner.New(unusedModel{t: t}, noToken, "triage", "draft", slog.New(slog.DiscardHandler)))
+	testWebhookToActionsScaffoldPullRequest(t, newServerRunner(unusedModel{t: t}))
 }
 
 func testWebhookToActionsScaffoldPullRequest(t *testing.T, server gate.ServerRunner) {

@@ -37,7 +37,7 @@ func runTool(t *testing.T, root *os.Root, name, args string) llm.ToolResult {
 		Accept:   func(json.RawMessage) error { return nil },
 		MaxSteps: 5,
 	}
-	if _, _, err := agent.Run(t.Context(), model, task, agent.NewBudget(1_000_000)); err != nil {
+	if _, _, err := agent.Run(t.Context(), model, task, &capCharger{max: 1_000_000}); err != nil {
 		t.Fatalf("Run() = %v, want nil error", err)
 	}
 	return got

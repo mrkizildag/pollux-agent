@@ -16,7 +16,8 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/mrkizildag/pollux-agent/backend/internal/docs"
+	"github.com/mrkizildag/pollux-agent/backend/internal/review"
+	"github.com/mrkizildag/pollux-agent/backend/internal/review/pipeline"
 )
 
 const maxGitOutputLen = 500
@@ -64,44 +65,50 @@ func cloneAt(ctx context.Context, remoteURL, token, checkout string, alsoFetch .
 	return dir, nil
 }
 
-// openClone clones sha of owner/repo, also fetching alsoFetch, and opens its
-// root. cleanup closes the root and removes the clone; it is non-nil only when
-// err is nil.
-func (r *Runner) openClone(ctx context.Context, installationID int64, owner, repo, sha string, alsoFetch ...string) (*clone, func(), error) {
-	token, err := r.token(ctx, installationID, repo)
+// openClone clones ck.Head of ck.Owner/ck.Repo, also fetching ck.Base when it
+// is set, and opens its root. The caller closes the clone once err is nil.
+func (b *Backend) openClone(ctx context.Context, ck pipeline.Checkout) (*clone, error) {
+	token, err := b.token(ctx, ck.InstallationID, ck.Repo)
 	if err != nil {
-		return nil, nil, fmt.Errorf("get installation token: %w: %w", errClone, err)
+		return nil, fmt.Errorf("get installation token: %w: %w", pipeline.ErrWorkspace, err)
 	}
 
-	remoteURL := r.remote
+	remoteURL := b.remote
 	if remoteURL == "" {
-		remoteURL = fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+		remoteURL = fmt.Sprintf("https://github.com/%s/%s.git", ck.Owner, ck.Repo)
 	}
 
-	dir, err := cloneAt(ctx, remoteURL, token, sha, alsoFetch...)
+	var alsoFetch []string
+	if ck.Base != "" {
+		alsoFetch = append(alsoFetch, ck.Base)
+	}
+	dir, err := cloneAt(ctx, remoteURL, token, ck.Head, alsoFetch...)
 	if err != nil {
 		if dir != "" {
-			_ = os.RemoveAll(dir) // best-effort cleanup of a temp dir; the runner has no logger
+			_ = os.RemoveAll(dir) // best-effort removal of a temp dir the clone failed to fill
 		}
-		return nil, nil, fmt.Errorf("%w: %w", errClone, err)
+		return nil, fmt.Errorf("%w: %w", pipeline.ErrWorkspace, err)
 	}
 
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		_ = os.RemoveAll(dir)
-		return nil, nil, fmt.Errorf("open clone root: %w", err)
+		return nil, fmt.Errorf("open clone root: %w: %w", pipeline.ErrWorkspace, err)
 	}
-	return &clone{root: root, dir: dir, remoteURL: remoteURL, token: token}, func() {
-		_ = root.Close()
-		_ = os.RemoveAll(dir)
-	}, nil
+	return &clone{root: root, dir: dir, remoteURL: remoteURL, token: token}, nil
+}
+
+// close closes the clone's root and removes its directory.
+func (c *clone) close() {
+	_ = c.root.Close()
+	_ = os.RemoveAll(c.dir)
 }
 
 // docsAt reads docs/ at sha, which openClone fetched, straight from git
 // objects and returns it as an in-memory fs.FS rooted at the repo
 // root. Nothing is checked out, so the PR's .gitattributes can't rewrite the
 // base docs, and the agent's root over the clone can't reach them. Only regular
-// .md files of at most docs.MaxDocBytes are included.
+// .md files of at most pipeline.MaxDocBytes are included.
 func (c *clone) docsAt(ctx context.Context, baseSHA string) (fs.FS, error) {
 	listing, err := runGit(ctx, c.dir, c.remoteURL, c.token, "ls-tree", "-r", "-z", "--long", baseSHA, "--", "docs")
 	if err != nil {
@@ -118,7 +125,7 @@ func (c *clone) docsAt(ctx context.Context, baseSHA string) (fs.FS, error) {
 		if len(fields) != 4 || (fields[0] != "100644" && fields[0] != "100755") || fields[1] != "blob" {
 			continue
 		}
-		if size, err := strconv.Atoi(fields[3]); err != nil || size > docs.MaxDocBytes {
+		if size, err := strconv.Atoi(fields[3]); err != nil || size > pipeline.MaxDocBytes {
 			continue
 		}
 		paths = append(paths, path)
@@ -145,7 +152,7 @@ func (c *clone) docsAt(ctx context.Context, baseSHA string) (fs.FS, error) {
 			return nil, fmt.Errorf("read docs at %s: unexpected cat-file header %q for %s", baseSHA, strings.TrimSpace(header), path)
 		}
 		size, err := strconv.Atoi(fields[2])
-		if err != nil || size < 0 || size > docs.MaxDocBytes {
+		if err != nil || size < 0 || size > pipeline.MaxDocBytes {
 			return nil, fmt.Errorf("read docs at %s: bad size in cat-file header %q for %s", baseSHA, strings.TrimSpace(header), path)
 		}
 		content := make([]byte, size+1) // the blob plus its trailing newline
@@ -190,7 +197,7 @@ func runGitStdin(ctx context.Context, dir, remoteURL, token, stdin string, args 
 		return "", fmt.Errorf("git %v: %w", args, ctxErr)
 	}
 	if err != nil {
-		return "", fmt.Errorf("git %v: %w: %s", args, err, oneLine(stderr.String(), maxGitOutputLen))
+		return "", fmt.Errorf("git %v: %w: %s", args, err, review.OneLine(stderr.String(), maxGitOutputLen))
 	}
 	return string(out), nil
 }
@@ -211,6 +218,7 @@ func gitEnv(home, remoteURL, token string) []string {
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_TERMINAL_PROMPT=0",
+		"GIT_LITERAL_PATHSPECS=1",
 		"GIT_ALLOW_PROTOCOL=" + protocols,
 	}
 	if token != "" {
