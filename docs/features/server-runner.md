@@ -5,6 +5,7 @@ covers:
   - backend/internal/llm/**
   - backend/internal/agent/**
   - backend/internal/review/llmrunner/**
+  - backend/internal/review/pipeline/**
   - backend/internal/review/instructions/**
   - backend/internal/github/files.go
   - backend/internal/review/basedocs/**
@@ -18,6 +19,8 @@ covers:
 # Server runner
 
 The server runner is the analysis runner for repos without the pollux-agent Actions workflow. It is on when `LLM_PROVIDER` is set; see [Setup](../guides/setup.md). It implements the runner contract from `internal/review` and returns either "no impact" with a reason or a list of validated proposals.
+
+The runner is a backend under the shared pipeline (`internal/review/pipeline`). The backend supplies the clone, the agent loop, and a triage-model judge; the pipeline owns selection, triage, the new-doc decision, verification, validation feedback, failure causes, limits, and usage, and imports neither `llm` nor `agent`. Each step below says what happens, whichever side runs it.
 
 ## Pipeline
 
@@ -55,7 +58,7 @@ The runner classifies every failure once, at the point it starts, into a fixed c
 
 ## Run visibility
 
-The agent loop logs one record per tool call (step, tool, the path or pattern truncated to 120 characters, tokens of that step; never file contents or submitted text) and one at the end with steps, tokens, duration, and outcome. Triage, new-doc, and verification calls log their tokens. Records carry `repo`, `pr`, and `head_sha` (scaffold runs `repo` and `scaffold_sha`), so one PR's run is a grep of the server log. The logger is passed into `llmrunner.New` and `agent.Task.Log`.
+The agent loop logs one record per tool call (step, tool, the path or pattern truncated to 120 characters, tokens of that step; never file contents or submitted text) and one at the end with steps, tokens, duration, and outcome. Triage, new-doc, and verification calls log their tokens. Records carry `repo`, `pr`, and `head_sha` (scaffold runs `repo` and `scaffold_sha`), so one PR's run is a grep of the server log. Each analysis also ends with one "analysis done" record: repo, PR, head SHA, outcome, model, and token totals (a scaffold run: repo and `scaffold_sha`). The logger is passed to the pipeline and `agent.Task.Log`.
 
 ## Usage
 

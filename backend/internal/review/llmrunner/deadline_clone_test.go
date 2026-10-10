@@ -2,15 +2,13 @@ package llmrunner_test
 
 import (
 	"errors"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/mrkizildag/pollux-agent/backend/internal/agent"
-	"github.com/mrkizildag/pollux-agent/backend/internal/review/llmrunner"
+	"github.com/mrkizildag/pollux-agent/backend/internal/review/pipeline"
 )
 
 func TestStart_DeadlineDuringCloneIsErrDeadline(t *testing.T) {
@@ -26,13 +24,13 @@ func TestStart_DeadlineDuringCloneIsErrDeadline(t *testing.T) {
 	t.Cleanup(func() { close(release); srv.Close() })
 
 	model := &fakeModel{}
-	runner := llmrunner.New(model, noToken, "triage-model", "draft-model", slog.New(slog.DiscardHandler))
+	runner := newRunner(model)
 	runner.SetRemote(srv.URL + "/o/r.git")
 	runner.SetTimeout(300 * time.Millisecond)
 
 	_, err := runner.Start(t.Context(), testRequest(strings.Repeat("a", 40)))
-	if !errors.Is(err, agent.ErrDeadline) {
-		t.Fatalf("Start() = %v, want errors.Is agent.ErrDeadline", err)
+	if !errors.Is(err, pipeline.ErrTimeout) {
+		t.Fatalf("Start() = %v, want errors.Is pipeline.ErrTimeout", err)
 	}
 	if len(model.calls) != 0 {
 		t.Errorf("model saw %d calls, want 0", len(model.calls))

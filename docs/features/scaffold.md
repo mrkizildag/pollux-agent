@@ -6,8 +6,8 @@ covers:
   - backend/internal/gate/sqlite/scaffold.go
   - backend/internal/github/scaffold.go
   - backend/internal/review/scaffold.go
-  - backend/internal/review/llmrunner/scaffold.go
-  - backend/internal/review/llmrunner/prompt.go
+  - backend/internal/review/pipeline/scaffold.go
+  - backend/internal/review/pipeline/prompt.go
   - backend/internal/review/instructions/**
   - backend/cmd/genaction/**
   - backend/internal/review/actions/actions.go

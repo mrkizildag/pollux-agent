@@ -19,6 +19,7 @@ import (
 	"github.com/mrkizildag/pollux-agent/backend/internal/llm"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review/llmrunner"
+	"github.com/mrkizildag/pollux-agent/backend/internal/review/pipeline"
 )
 
 const chainPatch = "@@ -1,3 +1,3 @@\n package app\n-// old wording\n+// new wording\n"
@@ -149,7 +150,7 @@ func TestWebhookToServerRunnerChain(t *testing.T) {
 	gh := &chainGitHub{calls: make(chan e2eCheckRunCall, 1)}
 	model := &chainModel{}
 	noToken := func(context.Context, int64, string) (string, error) { return "", nil }
-	runner := llmrunner.New(model, noToken, "triage", "draft", slog.New(slog.DiscardHandler))
+	runner := newServerRunner(model, noToken)
 	gateSvc := gate.NewService(gh, unusedCommentGitHub{}, store, gate.Runners{Server: runner}, nil, nil)
 
 	logger := slog.New(slog.DiscardHandler)
@@ -195,4 +196,10 @@ func TestWebhookToServerRunnerChain(t *testing.T) {
 			t.Errorf("triage request does not contain %q:\n%s", want, seen.String())
 		}
 	}
+}
+
+// newServerRunner composes the server runner as cmd/server does.
+func newServerRunner(model llm.Model, token func(context.Context, int64, string) (string, error)) *pipeline.Sync {
+	log := slog.New(slog.DiscardHandler)
+	return pipeline.NewSync(llmrunner.NewBackend(model, token, "draft", log), llmrunner.NewJudge(model, "triage"), log)
 }

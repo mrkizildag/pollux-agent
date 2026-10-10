@@ -79,6 +79,12 @@ func (b *Budget) Charge(u llm.Usage) error {
 	return nil
 }
 
+// Charger is what a run bills each model reply's usage to; a Budget is one.
+// Its error ends the run and is returned as is.
+type Charger interface {
+	Charge(u llm.Usage) error
+}
+
 // Usage is everything charged to the budget so far, cache tokens included.
 func (b *Budget) Usage() llm.Usage { return b.total }
 
@@ -86,7 +92,7 @@ func (b *Budget) Usage() llm.Usage { return b.total }
 // list_dir and t.Finish, executes any other tool call against t.Root, and ends when the
 // model calls t.Finish with arguments t.Accept accepts. A t.Accept error is
 // reported back to the model as a tool error, and the loop continues.
-func Run(ctx context.Context, m llm.Model, t Task, b *Budget) (json.RawMessage, Stats, error) {
+func Run(ctx context.Context, m llm.Model, t Task, b Charger) (json.RawMessage, Stats, error) {
 	if t.Log == nil {
 		t.Log = slog.New(slog.DiscardHandler)
 	}
@@ -101,7 +107,7 @@ func Run(ctx context.Context, m llm.Model, t Task, b *Budget) (json.RawMessage, 
 	return raw, stats, err
 }
 
-func run(ctx context.Context, m llm.Model, t Task, b *Budget) (json.RawMessage, Stats, error) {
+func run(ctx context.Context, m llm.Model, t Task, b Charger) (json.RawMessage, Stats, error) {
 	tools := append(readTools(), t.Finish)
 	messages := []llm.Message{{Role: llm.RoleUser, Text: t.Prompt}}
 	var stats Stats
@@ -126,7 +132,7 @@ func run(ctx context.Context, m llm.Model, t Task, b *Budget) (json.RawMessage, 
 		stats.InputTokens += resp.Usage.InputTokens
 		stats.OutputTokens += resp.Usage.OutputTokens
 		if err := b.Charge(resp.Usage); err != nil {
-			return nil, stats, err
+			return nil, stats, fmt.Errorf("charge step %d: %w", step+1, err)
 		}
 
 		for _, call := range resp.ToolCalls {

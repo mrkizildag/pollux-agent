@@ -21,6 +21,7 @@ import (
 	"github.com/mrkizildag/pollux-agent/backend/internal/llm"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review/actions"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review/llmrunner"
+	"github.com/mrkizildag/pollux-agent/backend/internal/review/pipeline"
 )
 
 const (
@@ -190,7 +191,8 @@ func buildRunners(cfg config.Config, ghClient *github.Client, logger *slog.Logge
 		return gate.Runners{}, fmt.Errorf("build LLM model: %w", err)
 	}
 
-	runner := llmrunner.New(model, ghClient.InstallationToken, cfg.LLM.TriageModel, cfg.LLM.Model, logger)
+	backend := llmrunner.NewBackend(model, ghClient.InstallationToken, cfg.LLM.Model, logger)
+	runner := pipeline.NewSync(backend, llmrunner.NewJudge(model, cfg.LLM.TriageModel), logger)
 	return gate.Runners{Actions: actionsRunner, Server: runner}, nil
 }
 

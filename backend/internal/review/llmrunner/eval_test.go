@@ -21,7 +21,6 @@ import (
 	"github.com/mrkizildag/pollux-agent/backend/internal/config"
 	"github.com/mrkizildag/pollux-agent/backend/internal/llm"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review"
-	"github.com/mrkizildag/pollux-agent/backend/internal/review/llmrunner"
 )
 
 const evalHTTPTimeout = 60 * time.Second
@@ -308,7 +307,7 @@ func serverAttempt(cfg config.Eval, m llm.Model, logDir string) attemptFunc {
 			}
 		}()
 
-		runner := llmrunner.New(m, noToken, cfg.LLM.TriageModel, cfg.LLM.Model, slog.New(slog.NewJSONHandler(logFile, nil)))
+		runner := newRunnerWith(m, cfg.LLM.TriageModel, cfg.LLM.Model, slog.New(slog.NewJSONHandler(logFile, nil)))
 		runner.SetRemote(in.Remote)
 
 		started, runErr := runner.Start(ctx, in.Request)

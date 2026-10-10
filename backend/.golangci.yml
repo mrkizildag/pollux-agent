@@ -76,6 +76,35 @@ linters:
           list-mode: strict
           allow:
             - $gostd
+        pipeline:
+          list-mode: strict
+          files:
+            - "**/internal/review/pipeline/**"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/mrkizildag/pollux-agent/backend/internal/review$
+            - github.com/mrkizildag/pollux-agent/backend/internal/review/basedocs
+            - github.com/mrkizildag/pollux-agent/backend/internal/review/finalize
+            - github.com/mrkizildag/pollux-agent/backend/internal/review/input
+            - github.com/mrkizildag/pollux-agent/backend/internal/review/instructions
+            - github.com/mrkizildag/pollux-agent/backend/internal/docs
+        # actions joins this rule when it moves onto the pipeline
+        agent-backends:
+          files:
+            - "**/internal/review/llmrunner/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/mrkizildag/pollux-agent/backend/internal/review/basedocs
+              desc: selection, validation, doc parsing and prompts belong to pipeline
+            - pkg: github.com/mrkizildag/pollux-agent/backend/internal/docs
+              desc: selection, validation, doc parsing and prompts belong to pipeline
+            - pkg: github.com/mrkizildag/pollux-agent/backend/internal/review/finalize
+              desc: selection, validation, doc parsing and prompts belong to pipeline
+            - pkg: github.com/mrkizildag/pollux-agent/backend/internal/review/instructions
+              desc: selection, validation, doc parsing and prompts belong to pipeline
+            - pkg: github.com/mrkizildag/pollux-agent/backend/internal/review/input
+              desc: selection, validation, doc parsing and prompts belong to pipeline
         llm-agent-leaf:
           files:
             - "**/internal/llm/**"
@@ -104,6 +133,7 @@ linters:
         - github.com/mrkizildag/pollux-agent/backend/internal/review.Started
         - github.com/mrkizildag/pollux-agent/backend/internal/review.ScaffoldStarted
         - github.com/mrkizildag/pollux-agent/backend/internal/review.Verdict
+        - github.com/mrkizildag/pollux-agent/backend/internal/review/pipeline.Workspace
   exclusions:
     rules:
       - path: internal/config/

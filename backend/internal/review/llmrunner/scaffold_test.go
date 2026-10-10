@@ -13,7 +13,6 @@ import (
 	"github.com/mrkizildag/pollux-agent/backend/internal/agent"
 	"github.com/mrkizildag/pollux-agent/backend/internal/llm"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review"
-	"github.com/mrkizildag/pollux-agent/backend/internal/review/llmrunner"
 )
 
 const scaffoldFrontmatter = "---\ntitle: T\nsummary: S\ncovers: []\n---\n"
@@ -41,7 +40,7 @@ func lastToolResult(req llm.Request) llm.ToolResult {
 func startScaffold(t *testing.T, model llm.Model) (review.ScaffoldStarted, error) {
 	t.Helper()
 	repoDir, sha := newGitRepo(t)
-	runner := llmrunner.New(model, noToken, "m", "m", slog.New(slog.DiscardHandler))
+	runner := newRunnerWith(model, "m", "m", slog.New(slog.DiscardHandler))
 	runner.SetRemote(repoDir)
 	started, err := runner.StartScaffold(t.Context(), review.ScaffoldRequest{Owner: "o", Repo: "r", BaseSHA: sha})
 	if err != nil {

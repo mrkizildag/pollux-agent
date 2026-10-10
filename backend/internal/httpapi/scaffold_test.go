@@ -21,7 +21,6 @@ import (
 	"github.com/mrkizildag/pollux-agent/backend/internal/jobqueue"
 	"github.com/mrkizildag/pollux-agent/backend/internal/llm"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review"
-	"github.com/mrkizildag/pollux-agent/backend/internal/review/llmrunner"
 )
 
 const (
@@ -223,7 +222,7 @@ func TestWebhookToScaffoldPullRequest(t *testing.T) {
 	gh := newScaffoldGitHub(tip)
 	model := &scaffoldModel{}
 	noToken := func(context.Context, int64, string) (string, error) { return "", nil }
-	gateSvc := gate.NewService(gh, gh, store, gate.Runners{Server: llmrunner.New(model, noToken, "triage", "draft", slog.New(slog.DiscardHandler))}, gh, httpapi.NewScaffoldQueue(store))
+	gateSvc := gate.NewService(gh, gh, store, gate.Runners{Server: newServerRunner(model, noToken)}, gh, httpapi.NewScaffoldQueue(store))
 	worker := jobqueue.NewWorker(store, httpapi.HandleJob(gateSvc), slog.New(slog.DiscardHandler), 8)
 	stopWorker := runWorker(worker)
 	var stopOnce sync.Once
@@ -335,7 +334,7 @@ func adoptBotScaffoldPullRequest(t *testing.T, branchTip string) {
 	gh.existing = &gate.ScaffoldPR{Number: 7, URL: "https://github.com/acme/widgets/pull/7", ByBot: true}
 	model := &scaffoldModel{}
 	noToken := func(context.Context, int64, string) (string, error) { return "", nil }
-	gateSvc := gate.NewService(gh, gh, store, gate.Runners{Server: llmrunner.New(model, noToken, "triage", "draft", slog.New(slog.DiscardHandler))}, gh, httpapi.NewScaffoldQueue(store))
+	gateSvc := gate.NewService(gh, gh, store, gate.Runners{Server: newServerRunner(model, noToken)}, gh, httpapi.NewScaffoldQueue(store))
 	worker := jobqueue.NewWorker(store, httpapi.HandleJob(gateSvc), slog.New(slog.DiscardHandler), 8)
 	stopWorker := runWorker(worker)
 	var stopOnce sync.Once

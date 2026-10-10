@@ -1,4 +1,4 @@
-package llmrunner
+package pipeline
 
 import (
 	"crypto/rand"
@@ -174,4 +174,14 @@ func scaffoldSystemPrompt() string {
 func scaffoldUserPrompt(f fence, owner, repo, baseSHA string) string {
 	return fmt.Sprintf("Repository: %s\nCommit: %s\n\nExplore the repository, then call submit_docs once with the three documents.\n",
 		f.wrap(owner+"/"+repo), baseSHA)
+}
+
+// ScaffoldPrompts returns the system and user prompts of a scaffold run over
+// baseSHA of owner/repo.
+func ScaffoldPrompts(owner, repo, baseSHA string) (system, user string, err error) {
+	f, err := newFence()
+	if err != nil {
+		return "", "", err
+	}
+	return scaffoldSystemPrompt(), scaffoldUserPrompt(f, owner, repo, baseSHA), nil
 }
