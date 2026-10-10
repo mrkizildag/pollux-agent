@@ -81,7 +81,7 @@ const (
 	secretProposal = "SECRET-PROPOSAL-REASON-5526"
 )
 
-func runLogged(t *testing.T, ws pipeline.Workspace, judge *fakeJudge, backend *fakeBackend, changed ...review.ChangedFile) (*logCapture, error) {
+func runLogged(t *testing.T, ws *fakeWorkspace, judge *fakeJudge, backend *fakeBackend, changed ...review.ChangedFile) (*logCapture, error) {
 	t.Helper()
 	if len(changed) == 0 {
 		changed = []review.ChangedFile{mainGoChange()}
@@ -136,7 +136,7 @@ func TestStartLogsOneAnalysisDone(t *testing.T) {
 		},
 		{
 			name:    "triage rejects every doc",
-			judge:   newJudge().on(kindTriage, triageReply),
+			judge:   newJudge().on(pipeline.KindTriage, triageReply),
 			backend: &fakeBackend{},
 			outcome: "no_impact",
 			model:   "triage-model",
@@ -144,7 +144,7 @@ func TestStartLogsOneAnalysisDone(t *testing.T) {
 		},
 		{
 			name:    "proposals",
-			judge:   newJudge().on(kindTriage, impacted).on(kindVerify, verified),
+			judge:   newJudge().on(pipeline.KindTriage, impacted).on(pipeline.KindVerify, verified),
 			backend: &fakeBackend{submissions: []json.RawMessage{submit(proposal)}, charge: review.Tokens{Input: 100, Output: 20, CacheWrite: 7}},
 			outcome: "proposals",
 			model:   "draft-model",
@@ -152,7 +152,7 @@ func TestStartLogsOneAnalysisDone(t *testing.T) {
 		},
 		{
 			name:      "failure",
-			judge:     newJudge().on(kindTriage, impacted),
+			judge:     newJudge().on(pipeline.KindTriage, impacted),
 			backend:   &fakeBackend{charge: review.Tokens{Input: 4, Output: 1}, runErr: pipeline.ErrLimit},
 			outcome:   "failed",
 			cause:     string(review.CauseLimit),

@@ -99,7 +99,7 @@ func Proposals(ctx context.Context, head Head, rules Rules, raw []review.Proposa
 
 	for i, p := range raw {
 		fail := func(format string, args ...any) {
-			problems = append(problems, Problem{Index: i, Err: errors.New(oneLine(fmt.Sprintf(format, args...), maxProblemLen))})
+			problems = append(problems, Problem{Index: i, Err: errors.New(review.OneLine(fmt.Sprintf(format, args...), maxProblemLen))})
 		}
 
 		out[i] = p
@@ -176,11 +176,11 @@ func Proposals(ctx context.Context, head Head, rules Rules, raw []review.Proposa
 
 // NoImpactReason collapses s to one trimmed line of at most maxReasonLen bytes.
 func NoImpactReason(s string) string {
-	return oneLine(s, maxReasonLen)
+	return review.OneLine(s, maxReasonLen)
 }
 
 func quoted(s string) string {
-	return oneLine(s, maxQuotedLen)
+	return review.OneLine(s, maxQuotedLen)
 }
 
 func countHeading(d docs.Doc, heading string) int {
@@ -204,14 +204,6 @@ func headings(d docs.Doc) string {
 		return "(none)"
 	}
 	return strings.Join(hs, ", ")
-}
-
-func oneLine(s string, limit int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) > limit {
-		s = strings.ToValidUTF8(s[:limit], "") + "..."
-	}
-	return s
 }
 
 // ReadDoc reads docPath at head the way a section edit's doc is read: only when

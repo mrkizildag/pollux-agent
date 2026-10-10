@@ -12,41 +12,34 @@ import (
 	"github.com/mrkizildag/pollux-agent/backend/internal/review/finalize"
 )
 
-// run is one analysis's shared model state: the workspace, the logger, the
+// run is one analysis's shared model state: the session, the logger, the
 // token meter, the prompt fence, and the PR's combined diff every prompt carries.
 type run struct {
-	s     *Sync
-	ws    Workspace
-	log   *slog.Logger
-	meter *Meter
-	fence fence
-	patch string
+	s       *Sync
+	session Session
+	log     *slog.Logger
+	meter   *Meter
+	fence   fence
+	patch   string
 }
 
-func (s *Sync) newRun(ws Workspace, req review.Request) (run, error) {
+func (s *Sync) newRun(session Session, req review.Request, log *slog.Logger, meter *Meter) (run, error) {
 	f, err := newFence()
 	if err != nil {
 		return run{}, err
 	}
 	return run{
-		s:     s,
-		ws:    ws,
-		log:   s.log.With("repo", req.Owner+"/"+req.Repo, "pr", req.Number, "head_sha", req.HeadSHA),
-		meter: NewMeter(s.limits.Tokens),
-		fence: f,
-		patch: combinedPatch(req.ChangedFiles),
+		s:       s,
+		session: session,
+		log:     log,
+		meter:   meter,
+		fence:   f,
+		patch:   combinedPatch(req.ChangedFiles),
 	}, nil
 }
 
-// oneLine collapses s onto a single line and truncates it to max bytes. It
-// caps log and error text; no-impact reasons use finalize.NoImpactReason.
-func oneLine(s string, max int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) > max {
-		s = strings.ToValidUTF8(s[:max], "") + "..."
-	}
-	return s
-}
+// maxReplyQuote caps the judge reply quoted in an error.
+const maxReplyQuote = 200
 
 // The verdict flags are pointers so a reply that omits them is an error, not
 // a silent "no".
@@ -70,10 +63,10 @@ type verifyVerdict struct {
 func decodeVerdict(reply string, v any) error {
 	start := strings.IndexByte(reply, '{')
 	if start < 0 {
-		return fmt.Errorf("decode verdict from reply %q: no JSON object", oneLine(reply, 200))
+		return fmt.Errorf("decode verdict from reply %q: no JSON object", review.OneLine(reply, maxReplyQuote))
 	}
 	if err := json.NewDecoder(strings.NewReader(reply[start:])).Decode(v); err != nil {
-		return fmt.Errorf("decode verdict from reply %q: %w", oneLine(reply, 200), err)
+		return fmt.Errorf("decode verdict from reply %q: %w", review.OneLine(reply, maxReplyQuote), err)
 	}
 	return nil
 }
@@ -112,12 +105,12 @@ func (r run) triageAll(ctx context.Context, candidates []docs.Doc) (impacted []d
 // stale and why.
 func (r run) triage(ctx context.Context, doc docs.Doc) (impacted bool, reason string, err error) {
 	var v triageVerdict
-	reply, err := r.ask(ctx, "triage", triageSystemPrompt, triageUserPrompt(r.fence, doc, r.patch), &v)
+	reply, err := r.ask(ctx, KindTriage, triageSystemPrompt, triageUserPrompt(r.fence, doc, r.patch), &v)
 	if err != nil {
 		return false, "", err
 	}
 	if v.Impacted == nil {
-		return false, "", fmt.Errorf("%w: triage verdict has no \"impacted\" field in reply %q", ErrProvider, oneLine(reply, 200))
+		return false, "", fmt.Errorf("%w: triage verdict has no \"impacted\" field in reply %q", ErrProvider, review.OneLine(reply, maxReplyQuote))
 	}
 	return *v.Impacted, v.Reason, nil
 }
@@ -130,24 +123,42 @@ func (r run) newDocAllowed(ctx context.Context, uncovered []string) (needed bool
 		return false, "", fmt.Errorf("read docs/README.md: %w", err)
 	}
 	var v newDocVerdict
-	reply, err := r.ask(ctx, "new_doc", newDocSystemPrompt, newDocUserPrompt(r.fence, readme, uncovered, r.patch), &v)
+	reply, err := r.ask(ctx, KindNewDoc, newDocSystemPrompt, newDocUserPrompt(r.fence, readme, uncovered, r.patch), &v)
 	if err != nil {
 		return false, "", fmt.Errorf("decide new doc: %w", err)
 	}
 	if v.Needed == nil {
-		return false, "", fmt.Errorf("decide new doc: %w: new-doc verdict has no \"needed\" field in reply %q", ErrProvider, oneLine(reply, 200))
+		return false, "", fmt.Errorf("decide new doc: %w: new-doc verdict has no \"needed\" field in reply %q", ErrProvider, review.OneLine(reply, maxReplyQuote))
 	}
 	return *v.Needed, v.Reason, nil
 }
 
-// headReadme reads docs/README.md at the head, empty when it is not a regular
-// file.
+// headReadme reads docs/README.md at the head: empty when there is none, a note
+// when one exists but can't be read here.
 func (r run) headReadme(ctx context.Context) (string, error) {
-	src, _, err := finalize.ReadDoc(ctx, r.ws, "docs/README.md")
+	src, ok, err := finalize.ReadDoc(ctx, r.session, readmePath)
 	if err != nil {
 		return "", fmt.Errorf("read head README: %w", err)
 	}
-	return string(src), nil
+	if ok {
+		return string(src), nil
+	}
+	// Stat of the full path would follow a symlinked docs/ out of the checkout.
+	dir, err := r.session.Stat(ctx, "docs")
+	if err != nil {
+		return "", fmt.Errorf("check head docs dir: %w", err)
+	}
+	if dir != Dir {
+		return "", nil
+	}
+	kind, err := r.session.Stat(ctx, readmePath)
+	if err != nil {
+		return "", fmt.Errorf("check head README: %w", err)
+	}
+	if kind == Missing {
+		return "", nil
+	}
+	return unreadableReadmeNote, nil
 }
 
 // verifyAll verifies every proposal, returning the supported ones and a
@@ -176,12 +187,12 @@ func (r run) verify(ctx context.Context, p review.Proposal) (supported bool, rea
 	}
 
 	var v verifyVerdict
-	reply, err := r.ask(ctx, "verify", verifySystemPrompt, verifyUserPrompt(r.fence, p, section, r.patch), &v)
+	reply, err := r.ask(ctx, KindVerify, verifySystemPrompt, verifyUserPrompt(r.fence, p, section, r.patch), &v)
 	if err != nil {
 		return false, "", err
 	}
 	if v.Supported == nil {
-		return false, "", fmt.Errorf("%w: verify verdict has no \"supported\" field in reply %q", ErrProvider, oneLine(reply, 200))
+		return false, "", fmt.Errorf("%w: verify verdict has no \"supported\" field in reply %q", ErrProvider, review.OneLine(reply, maxReplyQuote))
 	}
 	return *v.Supported, v.Reason, nil
 }
@@ -194,7 +205,7 @@ type submitProposalsArgs struct {
 }
 
 // draft runs the backend task that drafts proposals and finalizes each
-// submission against the workspace's head under rules. It returns the final
+// submission against the session's head under rules. It returns the final
 // proposals and the model that drafted them.
 func (r run) draft(ctx context.Context, rules finalize.Rules, prompt draftPrompt) ([]review.Proposal, string, error) {
 	finish, err := submitProposalsFinish()
@@ -203,7 +214,7 @@ func (r run) draft(ctx context.Context, rules finalize.Rules, prompt draftPrompt
 	}
 
 	var finalized []review.Proposal
-	out, err := r.s.backend.Run(ctx, r.ws, Task{
+	out, err := r.session.Run(ctx, Task{
 		System: draftSystemPrompt(),
 		Prompt: prompt.user(r.fence, r.patch),
 		Finish: finish,
@@ -212,7 +223,7 @@ func (r run) draft(ctx context.Context, rules finalize.Rules, prompt draftPrompt
 			if err := json.Unmarshal(raw, &parsed); err != nil {
 				return fmt.Errorf("decode submit_proposals arguments: %w", err), nil
 			}
-			out, problems, err := finalize.Proposals(ctx, r.ws, rules, parsed.Proposals)
+			out, problems, err := finalize.Proposals(ctx, r.session, rules, parsed.Proposals)
 			if err != nil {
 				return nil, fmt.Errorf("finalize proposals: %w", err)
 			}

@@ -11,9 +11,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log/slog"
-	"os"
-	"strings"
 	"syscall"
 
 	"github.com/mrkizildag/pollux-agent/backend/internal/agent"
@@ -29,7 +26,6 @@ type Backend struct {
 	m     llm.Model
 	token func(ctx context.Context, installationID int64, repo string) (string, error)
 	model string
-	log   *slog.Logger
 
 	// Test override; see export_test.go.
 	remote string
@@ -39,58 +35,58 @@ var _ pipeline.Backend = (*Backend)(nil)
 
 // NewBackend returns a Backend that drafts with model, served by m, and
 // authenticates clones with a token from token.
-func NewBackend(m llm.Model, token func(ctx context.Context, installationID int64, repo string) (string, error), model string, log *slog.Logger) *Backend {
-	return &Backend{m: m, token: token, model: model, log: log}
+func NewBackend(m llm.Model, token func(ctx context.Context, installationID int64, repo string) (string, error), model string) *Backend {
+	return &Backend{m: m, token: token, model: model}
 }
 
 // Name implements pipeline.Backend.
 func (b *Backend) Name() string { return runnerName }
 
-// workspace is a clone opened for one analysis: the head as a pipeline.Head and
-// the docs at the base commit the clone also fetched.
-type workspace struct {
-	cloneHead
-	c    *clone
-	base string
-}
-
-var _ pipeline.Workspace = (*workspace)(nil)
-
-func (w *workspace) BaseDocs(ctx context.Context) (fs.FS, error) {
-	return w.c.docsAt(ctx, w.base)
-}
-
 // Open implements pipeline.Backend. Its errors wrap pipeline.ErrWorkspace.
-func (b *Backend) Open(ctx context.Context, ck pipeline.Checkout) (pipeline.Workspace, func(), error) {
-	var alsoFetch []string
-	if ck.Base != "" {
-		alsoFetch = append(alsoFetch, ck.Base)
-	}
-	c, cleanup, err := b.openClone(ctx, ck.InstallationID, ck.Owner, ck.Repo, ck.Head, alsoFetch...)
+func (b *Backend) Open(ctx context.Context, ck pipeline.Checkout) (pipeline.Session, error) {
+	c, err := b.openClone(ctx, ck)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return &workspace{cloneHead: cloneHead{root: c.root, gitlink: c.isGitlink}, c: c, base: ck.Base}, cleanup, nil
+	return &session{c: c, base: ck.Base, m: b.m, model: b.model}, nil
 }
 
-// Run implements pipeline.Backend: an agent loop over ws offering t.Finish,
-// ended by a submission t.Accept takes. A fatal error from t.Accept ends the
-// run and is wrapped in Run's error.
-func (b *Backend) Run(ctx context.Context, ws pipeline.Workspace, t pipeline.Task) (pipeline.Output, error) {
-	w, ok := ws.(*workspace)
-	if !ok {
-		return pipeline.Output{}, fmt.Errorf("run agent: workspace is %T, want the one Open returned", ws)
-	}
+// session is a clone opened for one analysis: the head as a pipeline.Head, the
+// docs at the base commit the clone also fetched, and the agent loop over it.
+// Its Stat never follows a symlink at the path it is asked about.
+type session struct {
+	c     *clone
+	base  string
+	m     llm.Model
+	model string
+}
 
+var _ pipeline.Session = (*session)(nil)
+
+// Close implements pipeline.Session.
+func (s *session) Close() { s.c.close() }
+
+// BaseDocs implements pipeline.Session.
+func (s *session) BaseDocs(ctx context.Context) (fs.FS, error) {
+	if s.base == "" {
+		return nil, fmt.Errorf("base docs: %w: checkout has no base commit", pipeline.ErrWorkspace)
+	}
+	return s.c.docsAt(ctx, s.base)
+}
+
+// Run implements pipeline.Session: an agent loop over the clone offering
+// t.Finish, ended by a submission t.Accept takes. A fatal error from t.Accept
+// ends the run and is wrapped in Run's error.
+func (s *session) Run(ctx context.Context, t pipeline.Task) (pipeline.Output, error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	var fatal error
-	raw, _, err := agent.Run(runCtx, b.m, agent.Task{
-		Model:  b.model,
+	raw, _, err := agent.Run(runCtx, s.m, agent.Task{
+		Model:  s.model,
 		System: t.System,
 		Prompt: t.Prompt,
-		Root:   w.c.root,
+		Root:   s.c.root,
 		Finish: llm.Tool{Name: t.Finish.Name, Description: t.Finish.Description, Schema: t.Finish.Schema},
 		Accept: func(args json.RawMessage) error {
 			feedback, fatalErr := t.Accept(runCtx, args)
@@ -111,13 +107,13 @@ func (b *Backend) Run(ctx context.Context, ws pipeline.Workspace, t pipeline.Tas
 	if err != nil {
 		return pipeline.Output{}, mapAgentError(err)
 	}
-	return pipeline.Output{Raw: raw, Model: b.model}, nil
+	return pipeline.Output{Raw: raw, Model: s.model}, nil
 }
 
 // mapAgentError wraps err in the pipeline sentinel for its cause, keeping err.
 func mapAgentError(err error) error {
 	switch {
-	case errors.Is(err, agent.ErrStepLimit), errors.Is(err, agent.ErrTokenBudget):
+	case errors.Is(err, agent.ErrStepLimit):
 		return fmt.Errorf("run agent: %w: %w", pipeline.ErrLimit, err)
 	case errors.Is(err, agent.ErrDeadline):
 		return fmt.Errorf("run agent: %w: %w", pipeline.ErrTimeout, err)
@@ -147,18 +143,9 @@ func tokensOf(u llm.Usage) review.Tokens {
 	}
 }
 
-// cloneHead is the pipeline.Head over the head clone. It never follows a
-// symlink at the path it is asked about. gitlink, when set, reports whether a
-// path is a submodule entry.
-type cloneHead struct {
-	root    *os.Root
-	gitlink func(ctx context.Context, path string) (bool, error)
-}
-
-var _ pipeline.Head = cloneHead{}
-
-func (h cloneHead) Stat(ctx context.Context, path string) (pipeline.Kind, error) {
-	info, err := h.root.Lstat(path)
+// Stat implements pipeline.Head.
+func (s *session) Stat(ctx context.Context, path string) (pipeline.Kind, error) {
+	info, err := s.c.root.Lstat(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
 		return pipeline.Missing, nil
@@ -168,10 +155,10 @@ func (h cloneHead) Stat(ctx context.Context, path string) (pipeline.Kind, error)
 		return pipeline.Other, nil
 	}
 	// A clone checks a submodule out as an empty directory.
-	if h.gitlink == nil || !h.emptyDir(path) {
+	if !s.emptyDir(path) {
 		return pipeline.Dir, nil
 	}
-	isLink, err := h.gitlink(ctx, path)
+	isLink, err := s.c.isGitlink(ctx, path)
 	if err != nil {
 		return pipeline.Missing, err
 	}
@@ -182,8 +169,8 @@ func (h cloneHead) Stat(ctx context.Context, path string) (pipeline.Kind, error)
 }
 
 // emptyDir reports whether dir has no entries.
-func (h cloneHead) emptyDir(dir string) bool {
-	f, err := h.root.Open(dir)
+func (s *session) emptyDir(dir string) bool {
+	f, err := s.c.root.Open(dir)
 	if err != nil {
 		return false
 	}
@@ -192,8 +179,9 @@ func (h cloneHead) emptyDir(dir string) bool {
 	return errors.Is(err, io.EOF) && len(entries) == 0
 }
 
-func (h cloneHead) ReadFile(_ context.Context, path string) ([]byte, bool, error) {
-	info, err := h.root.Lstat(path)
+// ReadFile implements pipeline.Head.
+func (s *session) ReadFile(_ context.Context, path string) ([]byte, bool, error) {
+	info, err := s.c.root.Lstat(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
 		return nil, false, nil
@@ -204,7 +192,7 @@ func (h cloneHead) ReadFile(_ context.Context, path string) ([]byte, bool, error
 		return nil, false, nil
 	}
 
-	f, err := h.root.Open(path)
+	f, err := s.c.root.Open(path)
 	if err != nil {
 		return nil, false, fmt.Errorf("open %s at head: %w", path, err)
 	}
@@ -218,14 +206,4 @@ func (h cloneHead) ReadFile(_ context.Context, path string) ([]byte, bool, error
 		return nil, false, nil
 	}
 	return src, true, nil
-}
-
-// oneLine collapses s onto a single line and truncates it to max bytes. It
-// caps log and error text.
-func oneLine(s string, max int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) > max {
-		s = strings.ToValidUTF8(s[:max], "") + "..."
-	}
-	return s
 }

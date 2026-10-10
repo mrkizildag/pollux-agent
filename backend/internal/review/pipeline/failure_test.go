@@ -26,14 +26,14 @@ func TestStart_FailureNamesItsCause(t *testing.T) {
 	}{
 		{
 			name:    "judge provider error",
-			judge:   newJudge().on(kindTriage, reply{err: fmt.Errorf("complete: %w", pipeline.ErrProvider)}),
+			judge:   newJudge().on(pipeline.KindTriage, reply{err: fmt.Errorf("complete: %w", pipeline.ErrProvider)}),
 			backend: &fakeBackend{},
 			want:    review.CauseProvider,
 			wantIs:  pipeline.ErrProvider,
 		},
 		{
 			name:    "backend provider error",
-			judge:   newJudge().on(kindTriage, triage(true)),
+			judge:   newJudge().on(pipeline.KindTriage, triage(true)),
 			backend: &fakeBackend{runErr: fmt.Errorf("run agent: %w", pipeline.ErrProvider)},
 			want:    review.CauseProvider,
 			wantIs:  pipeline.ErrProvider,
@@ -55,7 +55,7 @@ func TestStart_FailureNamesItsCause(t *testing.T) {
 		},
 		{
 			name:    "token limit in the judge",
-			judge:   newJudge().on(kindTriage, overBudget),
+			judge:   newJudge().on(pipeline.KindTriage, overBudget),
 			backend: &fakeBackend{},
 			limits:  pipeline.Limits{Steps: 12, Tokens: 10, Deadline: time.Minute},
 			want:    review.CauseLimit,
@@ -63,7 +63,7 @@ func TestStart_FailureNamesItsCause(t *testing.T) {
 		},
 		{
 			name:    "token limit in the backend",
-			judge:   newJudge().on(kindTriage, triage(true)),
+			judge:   newJudge().on(pipeline.KindTriage, triage(true)),
 			backend: &fakeBackend{charge: review.Tokens{Input: 100}},
 			limits:  pipeline.Limits{Steps: 12, Tokens: 10, Deadline: time.Minute},
 			want:    review.CauseLimit,
@@ -71,21 +71,21 @@ func TestStart_FailureNamesItsCause(t *testing.T) {
 		},
 		{
 			name:    "step limit",
-			judge:   newJudge().on(kindTriage, triage(true)),
+			judge:   newJudge().on(pipeline.KindTriage, triage(true)),
 			backend: &fakeBackend{runErr: fmt.Errorf("run agent: %w", pipeline.ErrLimit)},
 			want:    review.CauseLimit,
 			wantIs:  pipeline.ErrLimit,
 		},
 		{
 			name:    "timeout in the backend",
-			judge:   newJudge().on(kindTriage, triage(true)),
+			judge:   newJudge().on(pipeline.KindTriage, triage(true)),
 			backend: &fakeBackend{runErr: fmt.Errorf("run agent: %w", pipeline.ErrTimeout)},
 			want:    review.CauseTimeout,
 			wantIs:  pipeline.ErrTimeout,
 		},
 		{
 			name:    "a context deadline in the judge",
-			judge:   newJudge().on(kindTriage, reply{err: fmt.Errorf("complete: %w", context.DeadlineExceeded)}),
+			judge:   newJudge().on(pipeline.KindTriage, reply{err: fmt.Errorf("complete: %w", context.DeadlineExceeded)}),
 			backend: &fakeBackend{},
 			want:    review.CauseTimeout,
 			wantIs:  pipeline.ErrTimeout,
@@ -101,9 +101,16 @@ func TestStart_FailureNamesItsCause(t *testing.T) {
 			if limits == (pipeline.Limits{}) {
 				limits = pipeline.ReviewLimits()
 			}
-			a := analyzeWith(t, limits, ws, tc.judge, tc.backend)
+			a := scenario{ws, tc.judge, tc.backend, limits}.run(t)
 			if got := a.failure(t).Cause; got != tc.want {
 				t.Fatalf("Start() = %v, want a *review.FailedError with cause %q, got %q", a.err, tc.want, got)
+			}
+			wantClosed := 1
+			if tc.backend.openErr != nil {
+				wantClosed = 0
+			}
+			if tc.backend.closed != wantClosed {
+				t.Errorf("sessions closed = %d, want %d", tc.backend.closed, wantClosed)
 			}
 			if !errors.Is(a.err, tc.wantIs) {
 				t.Errorf("Start() = %v, want errors.Is %v", a.err, tc.wantIs)
@@ -115,7 +122,7 @@ func TestStart_FailureNamesItsCause(t *testing.T) {
 func TestStart_TimeoutIsNotACancellation(t *testing.T) {
 	t.Parallel()
 
-	a := analyze(t, xWorkspace(), newJudge().on(kindTriage, reply{err: fmt.Errorf("complete: %w", context.DeadlineExceeded)}), &fakeBackend{})
+	a := analyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, reply{err: fmt.Errorf("complete: %w", context.DeadlineExceeded)}), &fakeBackend{})
 	if errors.Is(a.err, context.Canceled) {
 		t.Errorf("Start() = %v, must not match context.Canceled", a.err)
 	}

@@ -2,8 +2,11 @@ package pipeline_test
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/mrkizildag/pollux-agent/backend/internal/review"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review/pipeline"
@@ -12,7 +15,7 @@ import (
 func TestStart_ImpactedDocProducesProposal(t *testing.T) {
 	t.Parallel()
 
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindTriage, triage(true)).on(kindVerify, verify(true)),
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, triage(true)).on(pipeline.KindVerify, verify(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(proposalFor("docs/x.md", 2))}})
 	p := a.proposals(t, 1)[0]
 	if p.DocPath != "docs/x.md" || p.Anchor.File != "main.go" || p.Anchor.Line != 2 {
@@ -29,7 +32,7 @@ func TestStart_ImpactedDocProducesProposal(t *testing.T) {
 func TestStart_AllTriageNoIsNoImpact(t *testing.T) {
 	t.Parallel()
 
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindTriage, triage(false)), &fakeBackend{})
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, triage(false)), &fakeBackend{})
 	a.noImpact(t)
 	if len(a.judge.asked) != 1 || len(a.backend.tasks) != 0 {
 		t.Errorf("judge saw %d questions and backend ran %d tasks, want exactly 1 triage call and no draft", len(a.judge.asked), len(a.backend.tasks))
@@ -39,7 +42,7 @@ func TestStart_AllTriageNoIsNoImpact(t *testing.T) {
 func TestStart_CoveredFileIsTriagedWithItsPatch(t *testing.T) {
 	t.Parallel()
 
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindTriage, triage(false)), &fakeBackend{})
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, triage(false)), &fakeBackend{})
 	if len(a.judge.asked) != 1 {
 		t.Fatalf("judge saw %d questions, want 1 triage call", len(a.judge.asked))
 	}
@@ -54,7 +57,7 @@ func TestStart_NoImpactReasonJoinsTriageReasons(t *testing.T) {
 	t.Parallel()
 
 	ws := xWorkspace().doc("docs/y.md", xDoc)
-	a := mustAnalyze(t, ws, newJudge().on(kindTriage, triage(false), triage(false)), &fakeBackend{})
+	a := mustAnalyze(t, ws, newJudge().on(pipeline.KindTriage, triage(false), triage(false)), &fakeBackend{})
 	reason := a.noImpact(t).Reason
 	for _, want := range []string{"no candidate doc is affected", "docs/x.md: scripted", "docs/y.md: scripted"} {
 		if !strings.Contains(reason, want) {
@@ -69,7 +72,7 @@ func TestStart_NoImpactReasonJoinsTriageReasons(t *testing.T) {
 func TestStart_FencedTriageReplyParses(t *testing.T) {
 	t.Parallel()
 
-	judge := newJudge().on(kindTriage, text("Sure:\n```json\n{\"impacted\": false, \"reason\": \"fenced\"}\n```\nDone."))
+	judge := newJudge().on(pipeline.KindTriage, text("Sure:\n```json\n{\"impacted\": false, \"reason\": \"fenced\"}\n```\nDone."))
 	a := mustAnalyze(t, xWorkspace(), judge, &fakeBackend{})
 	if reason := a.noImpact(t).Reason; !strings.Contains(reason, "fenced") {
 		t.Fatalf("Reason = %q, want it to carry the reason fenced", reason)
@@ -79,7 +82,7 @@ func TestStart_FencedTriageReplyParses(t *testing.T) {
 func TestStart_UnparseableTriageReplyErrorsWithReply(t *testing.T) {
 	t.Parallel()
 
-	a := analyze(t, xWorkspace(), newJudge().on(kindTriage, text("I cannot decide.")), &fakeBackend{})
+	a := analyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, text("I cannot decide.")), &fakeBackend{})
 	if a.err == nil || !strings.Contains(a.err.Error(), "I cannot decide.") {
 		t.Fatalf("Start() = %v, want an error quoting the reply", a.err)
 	}
@@ -91,7 +94,7 @@ func TestStart_UnparseableTriageReplyErrorsWithReply(t *testing.T) {
 func TestStart_TriageReplyWithoutImpactedErrors(t *testing.T) {
 	t.Parallel()
 
-	a := analyze(t, xWorkspace(), newJudge().on(kindTriage, text(`{"reason": "hmm"}`)), &fakeBackend{})
+	a := analyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, text(`{"reason": "hmm"}`)), &fakeBackend{})
 	if a.err == nil || !strings.Contains(a.err.Error(), "impacted") || !strings.Contains(a.err.Error(), "hmm") {
 		t.Fatalf("Start() = %v, want an error naming the missing field and quoting the reply", a.err)
 	}
@@ -100,7 +103,7 @@ func TestStart_TriageReplyWithoutImpactedErrors(t *testing.T) {
 func TestStart_PromptsFencePatchAndMarkOmittedPatch(t *testing.T) {
 	t.Parallel()
 
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindTriage, triage(false)).on(kindNewDoc, newDoc(false)), &fakeBackend{},
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, triage(false)).on(pipeline.KindNewDoc, newDoc(false)), &fakeBackend{},
 		mainGoChange(), review.ChangedFile{Path: "big.bin"})
 	first := a.judge.asked[0]
 	patchAt := strings.Index(first.prompt, "func main() {}")
@@ -120,7 +123,7 @@ func TestStart_PromptsFencePatchAndMarkOmittedPatch(t *testing.T) {
 func TestStart_DraftPromptListsHunkRanges(t *testing.T) {
 	t.Parallel()
 
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindTriage, triage(true)),
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, triage(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit()}})
 	if got := a.backend.tasks[0].Prompt; !strings.Contains(got, `"main.go": 1-3`) {
 		t.Errorf("draft prompt = %q, want it to contain \"main.go: 1-3\"", got)
@@ -131,7 +134,7 @@ func TestStart_VerificationDropsRejectedProposal(t *testing.T) {
 	t.Parallel()
 
 	a := mustAnalyze(t, xWorkspace(),
-		newJudge().on(kindTriage, triage(true)).on(kindVerify, verify(true), verify(false)),
+		newJudge().on(pipeline.KindTriage, triage(true)).on(pipeline.KindVerify, verify(true), verify(false)),
 		&fakeBackend{submissions: []json.RawMessage{submit(proposalFor("docs/x.md", 2), proposalFor("docs/x.md", 3))}})
 	if proposals := a.proposals(t, 1); proposals[0].Anchor.Line != 2 {
 		t.Fatalf("Verdict = %#v, want exactly the first proposal", a.result.Verdict)
@@ -145,7 +148,7 @@ func TestStart_VerificationRejectsAllIsNoImpact(t *testing.T) {
 	t.Parallel()
 
 	a := mustAnalyze(t, xWorkspace(),
-		newJudge().on(kindTriage, triage(true)).on(kindVerify, text(`{"supported": false, "reason": "diff\nunrelated"}`)),
+		newJudge().on(pipeline.KindTriage, triage(true)).on(pipeline.KindVerify, text(`{"supported": false, "reason": "diff\nunrelated"}`)),
 		&fakeBackend{submissions: []json.RawMessage{submit(proposalFor("docs/x.md", 2))}})
 	reason := a.noImpact(t).Reason
 	if strings.Contains(reason, "\n") || !strings.Contains(reason, "unrelated") {
@@ -160,7 +163,7 @@ func TestStart_VerifyReplyWithoutSupportedErrors(t *testing.T) {
 	t.Parallel()
 
 	a := analyze(t, xWorkspace(),
-		newJudge().on(kindTriage, triage(true)).on(kindVerify, text(`{"reason": "hmm"}`)),
+		newJudge().on(pipeline.KindTriage, triage(true)).on(pipeline.KindVerify, text(`{"reason": "hmm"}`)),
 		&fakeBackend{submissions: []json.RawMessage{submit(proposalFor("docs/x.md", 2))}})
 	if a.err == nil || !strings.Contains(a.err.Error(), "supported") || !strings.Contains(a.err.Error(), "hmm") {
 		t.Fatalf("Start() = %v, want an error naming the missing field and quoting the reply", a.err)
@@ -174,15 +177,15 @@ func TestStart_ReportsUsageAndProducingModel(t *testing.T) {
 		t.Parallel()
 
 		judge := newJudge().
-			on(kindTriage, triage(true).withTokens(review.Tokens{Input: 10, Output: 1, CacheRead: 2})).
-			on(kindVerify, verify(true).withTokens(review.Tokens{Input: 7, Output: 1}))
+			on(pipeline.KindTriage, triage(true).withTokens(review.Tokens{Input: 10, Output: 1, CacheRead: 2})).
+			on(pipeline.KindVerify, verify(true).withTokens(review.Tokens{Input: 7, Output: 1}))
 		backend := &fakeBackend{
 			submissions: []json.RawMessage{submit(proposalFor("docs/x.md", 2))},
 			charge:      review.Tokens{Input: 20, Output: 5, CacheWrite: 3},
 		}
 		a := mustAnalyze(t, xWorkspace(), judge, backend)
 		want := &review.Usage{Tokens: &review.Tokens{Input: 37, Output: 7, CacheRead: 2, CacheWrite: 3}}
-		if diff := cmpUsage(want, a.result.Usage); diff != "" {
+		if diff := cmp.Diff(want, a.result.Usage); diff != "" {
 			t.Errorf("Usage (-want +got):\n%s", diff)
 		}
 		if a.result.Model != "draft-model" {
@@ -193,11 +196,11 @@ func TestStart_ReportsUsageAndProducingModel(t *testing.T) {
 	t.Run("a triage-only verdict names the triage model", func(t *testing.T) {
 		t.Parallel()
 
-		a := mustAnalyze(t, xWorkspace(), newJudge().on(kindTriage, triage(false).withTokens(review.Tokens{Input: 4, Output: 2})), &fakeBackend{})
+		a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, triage(false).withTokens(review.Tokens{Input: 4, Output: 2})), &fakeBackend{})
 		if a.result.Model != "triage-model" {
 			t.Errorf("Model = %q, want triage-model", a.result.Model)
 		}
-		if diff := cmpUsage(&review.Usage{Tokens: &review.Tokens{Input: 4, Output: 2}}, a.result.Usage); diff != "" {
+		if diff := cmp.Diff(&review.Usage{Tokens: &review.Tokens{Input: 4, Output: 2}}, a.result.Usage); diff != "" {
 			t.Errorf("Usage (-want +got):\n%s", diff)
 		}
 	})
@@ -221,5 +224,36 @@ func TestMeter_ChargeFailsPastTheCap(t *testing.T) {
 	}
 	if err := m.Charge(review.Tokens{Input: 1}); err == nil {
 		t.Fatal("Charge(11 of 10) = nil, want an error")
+	}
+}
+
+func TestStart_NewDocPromptNotesAnUnreadableReadme(t *testing.T) {
+	t.Parallel()
+
+	const note = "docs/README.md exists but could not be read"
+	tests := []struct {
+		name     string
+		ws       *fakeWorkspace
+		wantNote bool
+	}{
+		{name: "absent", ws: xWorkspace()},
+		{name: "readable", ws: xWorkspace().headFile("docs/README.md", "- [X](x.md): about x.\n")},
+		{name: "symlink", ws: xWorkspace().at("docs/README.md", nonRegular()), wantNote: true},
+		{name: "under a symlinked docs dir", ws: xWorkspace().at("docs", nonRegular()).at("docs/README.md", unreadable(errors.New("path escapes from parent")))},
+		{name: "oversized", ws: xWorkspace().headFile("docs/README.md", strings.Repeat("x", 2<<20)), wantNote: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			a := mustAnalyze(t, tc.ws, newJudge().on(pipeline.KindNewDoc, newDoc(false)), &fakeBackend{}, otherGoChange())
+			prompts := a.judge.prompts(pipeline.KindNewDoc)
+			if len(prompts) != 1 {
+				t.Fatalf("new-doc questions = %d, want 1", len(prompts))
+			}
+			if got := strings.Contains(prompts[0], note); got != tc.wantNote {
+				t.Errorf("new-doc prompt contains the README note = %t, want %t", got, tc.wantNote)
+			}
+		})
 	}
 }

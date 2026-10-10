@@ -11,8 +11,6 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/google/go-cmp/cmp"
-
 	"github.com/mrkizildag/pollux-agent/backend/internal/review"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review/finalize"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review/pipeline"
@@ -34,7 +32,7 @@ func nonRegular() headEntry { return headEntry{kind: finalize.Other} }
 // unreadable fails every Stat and ReadFile of the path with err.
 func unreadable(err error) headEntry { return headEntry{err: err} }
 
-// fakeWorkspace is an in-memory pipeline.Workspace: docs at the base as an
+// fakeWorkspace is the in-memory checkout a fakeSession reads: docs at the base as an
 // fs.FS and the head as a path-to-entry map. A path that is not an entry but
 // is the parent of one is a directory.
 type fakeWorkspace struct {
@@ -98,10 +96,10 @@ func (w *fakeWorkspace) ReadFile(_ context.Context, path string) ([]byte, bool, 
 	return []byte(e.src), true, nil
 }
 
-// fakeBackend is a scripted pipeline.Backend: Run feeds submissions through
-// Task.Accept in order until one is accepted.
+// fakeBackend is a scripted pipeline.Backend whose sessions feed submissions
+// through Task.Accept in order until one is accepted.
 type fakeBackend struct {
-	ws      pipeline.Workspace
+	ws      *fakeWorkspace
 	openErr error
 	model   string
 	// submissions are the raw submit_proposals arguments, fed in order.
@@ -112,21 +110,31 @@ type fakeBackend struct {
 	runErr error
 
 	opened   []pipeline.Checkout
+	closed   int
 	tasks    []pipeline.Task
 	feedback []error
 }
 
 func (b *fakeBackend) Name() string { return "fake" }
 
-func (b *fakeBackend) Open(_ context.Context, c pipeline.Checkout) (pipeline.Workspace, func(), error) {
+func (b *fakeBackend) Open(_ context.Context, c pipeline.Checkout) (pipeline.Session, error) {
 	b.opened = append(b.opened, c)
 	if b.openErr != nil {
-		return nil, nil, b.openErr
+		return nil, b.openErr
 	}
-	return b.ws, func() {}, nil
+	return &fakeSession{fakeWorkspace: b.ws, b: b}, nil
 }
 
-func (b *fakeBackend) Run(ctx context.Context, _ pipeline.Workspace, t pipeline.Task) (pipeline.Output, error) {
+// fakeSession is a fakeWorkspace opened by a fakeBackend.
+type fakeSession struct {
+	*fakeWorkspace
+	b *fakeBackend
+}
+
+func (s *fakeSession) Close() { s.b.closed++ }
+
+func (s *fakeSession) Run(ctx context.Context, t pipeline.Task) (pipeline.Output, error) {
+	b := s.b
 	b.tasks = append(b.tasks, t)
 	if err := t.Meter.Charge(b.charge); err != nil {
 		return pipeline.Output{}, fmt.Errorf("fake run: %w", err)
@@ -167,13 +175,6 @@ func submit(proposals ...any) json.RawMessage {
 	}
 	return raw
 }
-
-// Judge kinds the pipeline asks.
-const (
-	kindTriage = "triage"
-	kindNewDoc = "new_doc"
-	kindVerify = "verify"
-)
 
 // reply is one scripted Judge answer.
 type reply struct {
@@ -300,25 +301,29 @@ type analysis struct {
 	err     error
 }
 
-// analyze runs Sync over ws. With no changed files it analyzes main.go.
-func analyze(t *testing.T, ws pipeline.Workspace, judge *fakeJudge, backend *fakeBackend, changed ...review.ChangedFile) analysis {
-	t.Helper()
-	return analyzeWith(t, pipeline.ReviewLimits(), ws, judge, backend, changed...)
+// scenario is one analysis to run: the checkout, the judge and backend it
+// runs against, and the limits it runs under.
+type scenario struct {
+	ws      *fakeWorkspace
+	judge   *fakeJudge
+	backend *fakeBackend
+	limits  pipeline.Limits
 }
 
-func analyzeWith(t *testing.T, limits pipeline.Limits, ws pipeline.Workspace, judge *fakeJudge, backend *fakeBackend, changed ...review.ChangedFile) analysis {
+// run analyzes the changed files, main.go when none are given.
+func (sc scenario) run(t *testing.T, changed ...review.ChangedFile) analysis {
 	t.Helper()
 
 	if len(changed) == 0 {
 		changed = []review.ChangedFile{mainGoChange()}
 	}
-	backend.ws = ws
-	if backend.model == "" {
-		backend.model = "draft-model"
+	sc.backend.ws = sc.ws
+	if sc.backend.model == "" {
+		sc.backend.model = "draft-model"
 	}
-	runner := newSync(backend, judge).WithLimits(limits)
+	runner := newSync(sc.backend, sc.judge).WithLimits(sc.limits)
 	started, err := runner.Start(t.Context(), request(changed...))
-	a := analysis{backend: backend, judge: judge, err: err}
+	a := analysis{backend: sc.backend, judge: sc.judge, err: err}
 	if err != nil {
 		return a
 	}
@@ -330,8 +335,13 @@ func analyzeWith(t *testing.T, limits pipeline.Limits, ws pipeline.Workspace, ju
 	return a
 }
 
+func analyze(t *testing.T, ws *fakeWorkspace, judge *fakeJudge, backend *fakeBackend, changed ...review.ChangedFile) analysis {
+	t.Helper()
+	return scenario{ws, judge, backend, pipeline.ReviewLimits()}.run(t, changed...)
+}
+
 // mustAnalyze fails the test when the run errors.
-func mustAnalyze(t *testing.T, ws pipeline.Workspace, judge *fakeJudge, backend *fakeBackend, changed ...review.ChangedFile) analysis {
+func mustAnalyze(t *testing.T, ws *fakeWorkspace, judge *fakeJudge, backend *fakeBackend, changed ...review.ChangedFile) analysis {
 	t.Helper()
 	a := analyze(t, ws, judge, backend, changed...)
 	if a.err != nil {
@@ -374,5 +384,3 @@ func (a analysis) calls() int { return len(a.judge.asked) + len(a.backend.tasks)
 func newSync(b pipeline.Backend, j pipeline.Judge) *pipeline.Sync {
 	return pipeline.NewSync(b, j, slog.New(slog.DiscardHandler))
 }
-
-func cmpUsage(want, got *review.Usage) string { return cmp.Diff(want, got) }

@@ -7,12 +7,13 @@ import (
 	"testing"
 
 	"github.com/mrkizildag/pollux-agent/backend/internal/review"
+	"github.com/mrkizildag/pollux-agent/backend/internal/review/pipeline"
 )
 
 func TestStart_UncoveredFileWithoutNeedIsNoImpactAfterOneCall(t *testing.T) {
 	t.Parallel()
 
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindNewDoc, newDoc(false)), &fakeBackend{}, otherGoChange())
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindNewDoc, newDoc(false)), &fakeBackend{}, otherGoChange())
 	reason := a.noImpact(t).Reason
 	for _, want := range []string{"other.go", "no new doc needed", "no doc covers"} {
 		if !strings.Contains(reason, want) {
@@ -30,7 +31,7 @@ func TestStart_UncoveredFileWithoutNeedIsNoImpactAfterOneCall(t *testing.T) {
 func TestStart_UncoveredFileThatNeedsADocGetsANewDocProposal(t *testing.T) {
 	t.Parallel()
 
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindNewDoc, newDoc(true)).on(kindVerify, verify(true)),
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindNewDoc, newDoc(true)).on(pipeline.KindVerify, verify(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(newDocProposal("other.go"))}}, otherGoChange())
 	p := a.proposals(t, 1)[0]
 	if p.DocPath != "docs/other.md" || p.Section != "" || p.IndexEntry == "" || p.Original != "" {
@@ -50,7 +51,7 @@ func TestStart_MixedChangeTriagesCandidatesAndDecidesNewDoc(t *testing.T) {
 	t.Parallel()
 
 	a := mustAnalyze(t, xWorkspace(),
-		newJudge().on(kindTriage, triage(true)).on(kindNewDoc, newDoc(true)).on(kindVerify, verify(true), verify(true)),
+		newJudge().on(pipeline.KindTriage, triage(true)).on(pipeline.KindNewDoc, newDoc(true)).on(pipeline.KindVerify, verify(true), verify(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(proposalFor("docs/x.md", 2), newDocProposal("other.go"))}},
 		mainGoChange(), otherGoChange())
 	a.proposals(t, 2)
@@ -63,7 +64,7 @@ func TestStart_MixedChangeWithUnimpactedCandidateStillGetsNewDoc(t *testing.T) {
 	t.Parallel()
 
 	a := mustAnalyze(t, xWorkspace(),
-		newJudge().on(kindTriage, triage(false)).on(kindNewDoc, newDoc(true)).on(kindVerify, verify(true)),
+		newJudge().on(pipeline.KindTriage, triage(false)).on(pipeline.KindNewDoc, newDoc(true)).on(pipeline.KindVerify, verify(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(newDocProposal("other.go"))}},
 		mainGoChange(), otherGoChange())
 	if p := a.proposals(t, 1)[0]; p.DocPath != "docs/other.md" || p.Section != "" {
@@ -76,7 +77,7 @@ func TestStart_ChangedPathWithNewlineIsQuotedInAnchorHunks(t *testing.T) {
 
 	evil := otherGoChange()
 	evil.Path = "evil\nInjected: line.go"
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindNewDoc, newDoc(true)),
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindNewDoc, newDoc(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit()}}, evil)
 	prompt := a.backend.tasks[0].Prompt
 	if want := `"evil\nInjected: line.go": 1-3`; !strings.Contains(prompt, want) {
@@ -92,7 +93,7 @@ func newDocReturned(t *testing.T, ws *fakeWorkspace, proposal map[string]any) st
 	t.Helper()
 
 	a := mustAnalyze(t, ws,
-		newJudge().on(kindTriage, triage(true)).on(kindNewDoc, newDoc(true)).on(kindVerify, verify(true)),
+		newJudge().on(pipeline.KindTriage, triage(true)).on(pipeline.KindNewDoc, newDoc(true)).on(pipeline.KindVerify, verify(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(proposal), submit()}}, mainGoChange(), otherGoChange())
 	return a.backend.lastFeedback(t)
 }
@@ -100,7 +101,7 @@ func newDocReturned(t *testing.T, ws *fakeWorkspace, proposal map[string]any) st
 func TestStart_NewDocWhoseCoversMissTheUncoveredFilesIsReturnedToModel(t *testing.T) {
 	t.Parallel()
 
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindNewDoc, newDoc(true)),
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindNewDoc, newDoc(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(newDocProposal("elsewhere.go")), submit()}}, otherGoChange())
 	if got := a.backend.lastFeedback(t); !strings.Contains(got, "proposal 0: covers match none") {
 		t.Errorf("feedback = %q, want a proposal 0 error about covers", got)
@@ -111,7 +112,7 @@ func TestStart_NewDocIsRejectedWhenNoneWasNeeded(t *testing.T) {
 	t.Parallel()
 
 	a := mustAnalyze(t, xWorkspace(),
-		newJudge().on(kindTriage, triage(true)).on(kindNewDoc, newDoc(false)),
+		newJudge().on(pipeline.KindTriage, triage(true)).on(pipeline.KindNewDoc, newDoc(false)),
 		&fakeBackend{submissions: []json.RawMessage{submit(newDocProposal("other.go")), submit()}}, mainGoChange(), otherGoChange())
 	if got := a.backend.lastFeedback(t); !strings.Contains(got, "not allowed") {
 		t.Errorf("feedback = %q, want an error rejecting the new doc", got)
@@ -123,7 +124,7 @@ func TestStart_HashOnlySectionCannotBypassNewDocChecks(t *testing.T) {
 
 	proposal := proposalFor("docs/x.md", 2)
 	proposal["section"] = "#"
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindTriage, triage(true)),
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, triage(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(proposal), submit()}})
 	if got := a.backend.lastFeedback(t); !strings.Contains(got, "proposal 0: section: must name a heading") {
 		t.Errorf("feedback = %q, want an error rejecting the empty heading", got)
@@ -167,7 +168,7 @@ func TestStart_HeadReadErrorFailsTheRun(t *testing.T) {
 	proposal["doc_path"] = "docs/unreadable.md"
 	ws := xWorkspace().at("docs/unreadable.md", unreadable(boom))
 
-	a := analyze(t, ws, newJudge().on(kindTriage, triage(true)).on(kindNewDoc, newDoc(true)),
+	a := analyze(t, ws, newJudge().on(pipeline.KindTriage, triage(true)).on(pipeline.KindNewDoc, newDoc(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(proposal), submit()}}, mainGoChange(), otherGoChange())
 	if !errors.Is(a.err, boom) {
 		t.Fatalf("Start() = %v, want an error wrapping the head read failure", a.err)
@@ -185,7 +186,7 @@ func TestStart_InvalidProposalIsReturnedToModel(t *testing.T) {
 
 	bad := proposalFor("docs/x.md", 2)
 	bad["anchor"] = map[string]any{"file": "main.go", "line": 99}
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindTriage, triage(true)).on(kindVerify, verify(true)),
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, triage(true)).on(pipeline.KindVerify, verify(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(bad), submit(proposalFor("docs/x.md", 2))}})
 	if got := a.backend.feedback[0]; got == nil || !strings.Contains(got.Error(), `proposal 0: anchor.line 99: not a numbered line in the diff of "main.go"; commentable lines: 1-3`) {
 		t.Errorf("feedback = %v, want a validation error listing the commentable lines", got)
@@ -200,7 +201,7 @@ func TestStart_UnknownSectionIsReturnedToModelWithHeadings(t *testing.T) {
 
 	bad := proposalFor("docs/x.md", 2)
 	bad["section"] = "Nope"
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindTriage, triage(true)).on(kindVerify, verify(true)),
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, triage(true)).on(pipeline.KindVerify, verify(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(bad), submit(proposalFor("docs/x.md", 2))}})
 	if got := a.backend.feedback[0]; got == nil || !strings.Contains(got.Error(), `"X"`) {
 		t.Errorf("feedback = %v, want an error listing heading \"X\"", got)
@@ -212,7 +213,7 @@ func TestStart_DuplicateHeadingIsReturnedToModelAsAmbiguous(t *testing.T) {
 	t.Parallel()
 
 	ws := xWorkspace().headFile("docs/x.md", "---\ntitle: X\nsummary: Describes X.\ncovers:\n  - main.go\n---\n# Top\n\n## X\none\n\n## X\ntwo\n")
-	a := mustAnalyze(t, ws, newJudge().on(kindTriage, triage(true)),
+	a := mustAnalyze(t, ws, newJudge().on(pipeline.KindTriage, triage(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(proposalFor("docs/x.md", 2)), submit()}})
 	if got := a.backend.lastFeedback(t); !strings.Contains(got, "proposal 0:") || !strings.Contains(got, "ambiguous") {
 		t.Errorf("feedback = %q, want proposal 0 reported as ambiguous", got)
@@ -222,7 +223,7 @@ func TestStart_DuplicateHeadingIsReturnedToModelAsAmbiguous(t *testing.T) {
 func TestStart_SectionEditOfDocMissingAtHeadIsReturnedToModel(t *testing.T) {
 	t.Parallel()
 
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindTriage, triage(true)),
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, triage(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(proposalFor("docs/y.md", 2)), submit()}})
 	if got := a.backend.lastFeedback(t); !strings.Contains(got, "proposal 0:") || !strings.Contains(got, "no such doc at head") {
 		t.Errorf("feedback = %q, want proposal 0 reported as a doc missing at head", got)
@@ -232,7 +233,7 @@ func TestStart_SectionEditOfDocMissingAtHeadIsReturnedToModel(t *testing.T) {
 func TestStart_EveryBadProposalIsReturnedToModelWithItsIndex(t *testing.T) {
 	t.Parallel()
 
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindTriage, triage(true)),
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, triage(true)),
 		&fakeBackend{submissions: []json.RawMessage{
 			submit(proposalFor("docs/y.md", 2), proposalFor("docs/x.md", 2), proposalFor("docs/z.md", 2)), submit(),
 		}})
@@ -250,7 +251,7 @@ func TestStart_EveryBadProposalIsReturnedToModelWithItsIndex(t *testing.T) {
 func TestStart_MalformedSubmissionIsReturnedToModel(t *testing.T) {
 	t.Parallel()
 
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindTriage, triage(true)),
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, triage(true)),
 		&fakeBackend{submissions: []json.RawMessage{json.RawMessage(`{"proposals": "none"}`), submit()}})
 	if got := a.backend.lastFeedback(t); !strings.Contains(got, "decode submit_proposals arguments") {
 		t.Errorf("feedback = %q, want a decode error", got)

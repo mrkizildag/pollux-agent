@@ -14,8 +14,11 @@ import (
 )
 
 const (
-	maxDocBytes   = 64 << 10
-	maxPatchBytes = 128 << 10
+	maxPromptDocBytes = 64 << 10
+	maxPatchBytes     = 128 << 10
+
+	readmePath           = "docs/README.md"
+	unreadableReadmeNote = "(docs/README.md exists but could not be read)"
 
 	omittedPatch = "(patch omitted by GitHub: large or binary file)"
 
@@ -51,7 +54,7 @@ func capText(s string, max int, what string) string {
 }
 
 func docText(d docs.Doc) string {
-	return capText(string(d.Source), maxDocBytes, "doc")
+	return capText(string(d.Source), maxPromptDocBytes, "doc")
 }
 
 const triageSystemPrompt = `You triage whether a pull request makes one documentation file stale. ` +
@@ -72,7 +75,7 @@ const newDocSystemPrompt = `You decide whether a pull request adds behavior that
 
 func newDocUserPrompt(f fence, readme string, uncovered []string, patch string) string {
 	return fmt.Sprintf("Changed files no doc covers:\n%s\n\nDocs index (docs/README.md):\n%s\n\nPR diff:\n%s\n",
-		f.wrap(strings.Join(uncovered, "\n")), f.wrap(capText(readme, maxDocBytes, "docs/README.md")), f.wrap(patch))
+		f.wrap(strings.Join(uncovered, "\n")), f.wrap(capText(readme, maxPromptDocBytes, "docs/README.md")), f.wrap(patch))
 }
 
 const verifySystemPrompt = `You check one proposed documentation change against a pull request. You are given the ` +
@@ -82,7 +85,7 @@ const verifySystemPrompt = `You check one proposed documentation change against 
 
 func verifyUserPrompt(f fence, p review.Proposal, section, patch string) string {
 	return fmt.Sprintf("Proposal for %s (section %q, anchored at %s:%d)\nReason:\n%s\n\nProposed content:\n%s\n\nSection it replaces:\n%s\n\nPR diff:\n%s\n",
-		p.DocPath, p.Section, p.Anchor.File, p.Anchor.Line, f.wrap(p.Reason), f.wrap(p.Content), f.wrap(capText(section, maxDocBytes, "section")), f.wrap(patch))
+		p.DocPath, p.Section, p.Anchor.File, p.Anchor.Line, f.wrap(p.Reason), f.wrap(p.Content), f.wrap(capText(section, maxPromptDocBytes, "section")), f.wrap(patch))
 }
 
 func draftSystemPrompt() string {
@@ -176,9 +179,9 @@ func scaffoldUserPrompt(f fence, owner, repo, baseSHA string) string {
 		f.wrap(owner+"/"+repo), baseSHA)
 }
 
-// ScaffoldPrompts returns the system and user prompts of a scaffold run over
+// scaffoldPrompts returns the system and user prompts of a scaffold run over
 // baseSHA of owner/repo.
-func ScaffoldPrompts(owner, repo, baseSHA string) (system, user string, err error) {
+func scaffoldPrompts(owner, repo, baseSHA string) (system, user string, err error) {
 	f, err := newFence()
 	if err != nil {
 		return "", "", err

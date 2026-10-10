@@ -30,33 +30,33 @@ func (s *Sync) StartScaffold(ctx context.Context, req review.ScaffoldRequest) (r
 	meter := NewMeter(scaffoldTokens)
 	res, err := s.scaffold(ctx, req, log, meter)
 	if err != nil {
-		failed := Failed(fmt.Errorf("start scaffold %s/%s: %w", req.Owner, req.Repo, err))
-		logScaffoldDone(log, "", meter, failed)
-		return nil, failed
+		failure := failed(fmt.Errorf("start scaffold %s/%s: %w", req.Owner, req.Repo, err))
+		logScaffoldDone(log, "", meter, failure)
+		return nil, failure
 	}
 	logScaffoldDone(log, res.Model, meter, nil)
 	return res, nil
 }
 
 func (s *Sync) scaffold(ctx context.Context, req review.ScaffoldRequest, log *slog.Logger, meter *Meter) (review.Scaffold, error) {
-	ws, cleanup, err := s.backend.Open(ctx, Checkout{
+	session, err := s.backend.Open(ctx, Checkout{
 		InstallationID: req.InstallationID, Owner: req.Owner, Repo: req.Repo, Head: req.BaseSHA,
 	})
 	if err != nil {
 		return review.Scaffold{}, fmt.Errorf("open checkout: %w", err)
 	}
-	defer cleanup()
+	defer session.Close()
 
 	finish, err := submitDocsFinish()
 	if err != nil {
 		return review.Scaffold{}, err
 	}
-	system, prompt, err := ScaffoldPrompts(req.Owner, req.Repo, req.BaseSHA)
+	system, prompt, err := scaffoldPrompts(req.Owner, req.Repo, req.BaseSHA)
 	if err != nil {
 		return review.Scaffold{}, fmt.Errorf("build scaffold prompts: %w", err)
 	}
 
-	out, err := s.backend.Run(ctx, ws, Task{
+	out, err := session.Run(ctx, Task{
 		System: system,
 		Prompt: prompt,
 		Finish: finish,

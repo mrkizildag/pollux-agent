@@ -37,13 +37,13 @@ const (
 	reviewDeadline = 150 * time.Second
 )
 
-// MaxDocBytes is the largest doc a Workspace reads or lists.
+// MaxDocBytes is the largest doc a Session reads or lists.
 const MaxDocBytes = docs.MaxDocBytes
 
 // Head reads the PR's head commit one path at a time.
 type Head = finalize.Head
 
-// Kind is what a Workspace finds at one path; the constants are its values.
+// Kind is what a Session finds at one path; the constants are its values.
 type Kind = finalize.Kind
 
 const (
@@ -51,15 +51,6 @@ const (
 	Dir     = finalize.Dir
 	Other   = finalize.Other
 )
-
-// Workspace is the PR's checkout as the pipeline reads it: the head commit one
-// path at a time and the docs at the merge base.
-type Workspace interface {
-	Head
-	// BaseDocs returns docs/ at the merge base as an fs.FS rooted at the repo
-	// root, holding only regular .md files within docs.MaxDocBytes.
-	BaseDocs(ctx context.Context) (fs.FS, error)
-}
 
 // Checkout names the commit a backend opens. Base is empty when only the head
 // is needed.
@@ -93,7 +84,7 @@ type Finish struct {
 // error for which errors.Is(err, fatal) holds.
 type Accept func(ctx context.Context, raw json.RawMessage) (feedback, fatal error)
 
-// Task is one model-driven run over a Workspace.
+// Task is one model-driven run over a Session.
 type Task struct {
 	System, Prompt string
 	Finish         Finish
@@ -111,13 +102,30 @@ type Output struct {
 	Model string
 }
 
-// Backend opens checkouts and runs tasks over them. Errors it returns wrap
-// ErrWorkspace, ErrProvider, ErrTimeout or ErrLimit.
+// Session is one opened checkout: the pipeline reads it and runs tasks over it.
+// Its errors wrap ErrWorkspace, ErrProvider, ErrTimeout or ErrLimit.
+type Session interface {
+	Head
+	// BaseDocs returns docs/ at the merge base as an fs.FS rooted at the repo
+	// root, holding only regular .md files within docs.MaxDocBytes.
+	BaseDocs(ctx context.Context) (fs.FS, error)
+	Run(ctx context.Context, t Task) (Output, error)
+	Close()
+}
+
+// Backend opens checkouts.
 type Backend interface {
 	Name() string
-	Open(ctx context.Context, c Checkout) (Workspace, func(), error)
-	Run(ctx context.Context, ws Workspace, t Task) (Output, error)
+	// Open's errors wrap ErrWorkspace.
+	Open(ctx context.Context, c Checkout) (Session, error)
 }
+
+// Judge question kinds.
+const (
+	KindTriage = "triage"
+	KindNewDoc = "new_doc"
+	KindVerify = "verify"
+)
 
 // Question is one tool-less prompt to the Judge. Log receives the call's record.
 type Question struct {

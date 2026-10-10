@@ -1,6 +1,7 @@
 package llmrunner_test
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -22,17 +23,18 @@ func TestStart_FailureNamesItsCause(t *testing.T) {
 		return llm.Response{Text: `{"impacted": false, "reason": "x"}`, Usage: llm.Usage{InputTokens: 100}}, nil
 	}
 	tests := []struct {
-		name      string
-		model     llm.Model
-		badRemote bool
-		budget    int
-		timeout   time.Duration
-		want      review.FailureCause
+		name        string
+		model       llm.Model
+		badRemote   bool
+		budget      int
+		timeout     time.Duration
+		want        review.FailureCause
+		notCanceled bool
 	}{
 		{name: "provider error", model: &fakeModel{script: []func(llm.Request) (llm.Response, error){providerDown}}, want: review.CauseProvider},
 		{name: "clone failure", model: &fakeModel{}, badRemote: true, want: review.CauseClone},
 		{name: "token limit", model: &fakeModel{script: []func(llm.Request) (llm.Response, error){overBudget}}, budget: 10, want: review.CauseLimit},
-		{name: "timeout", model: blockingModel{}, timeout: 200 * time.Millisecond, want: review.CauseTimeout},
+		{name: "timeout", model: blockingModel{}, timeout: 200 * time.Millisecond, want: review.CauseTimeout, notCanceled: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -55,6 +57,9 @@ func TestStart_FailureNamesItsCause(t *testing.T) {
 			var failed *review.FailedError
 			if !errors.As(err, &failed) || failed.Cause != tc.want {
 				t.Fatalf("Start() = %v, want a *review.FailedError with cause %q", err, tc.want)
+			}
+			if tc.notCanceled && errors.Is(err, context.Canceled) {
+				t.Errorf("Start() = %v, must not match context.Canceled", err)
 			}
 		})
 	}

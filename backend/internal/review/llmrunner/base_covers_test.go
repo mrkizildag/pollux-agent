@@ -121,3 +121,25 @@ func TestStart_CandidateUnderASymlinkedDirectoryAtHeadFailsWithoutModelCalls(t *
 		t.Errorf("model saw %d calls, want 0", len(calls))
 	}
 }
+
+func TestStart_DocsReplacedBySymlinkedDirectoryAtHeadFailsWithoutModelCalls(t *testing.T) {
+	t.Parallel()
+
+	repoDir, baseSHA := newGitRepo(t)
+	if err := os.Rename(filepath.Join(repoDir, "docs"), filepath.Join(repoDir, "real")); err != nil {
+		t.Fatalf("rename docs: %v", err)
+	}
+	if err := os.Symlink("real", filepath.Join(repoDir, "docs")); err != nil {
+		t.Fatalf("symlink docs: %v", err)
+	}
+	headSHA := commitDoc(t, repoDir, "main.go", mainGoChanged)
+
+	_, calls, err := startBaseToHead(t, repoDir, baseSHA, headSHA, []review.ChangedFile{mainGoChange()})
+	var failed *review.FailedError
+	if !errors.As(err, &failed) || failed.Cause != review.CauseInternal {
+		t.Fatalf("Start() error = %v, want *review.FailedError with CauseInternal", err)
+	}
+	if len(calls) != 0 {
+		t.Errorf("model saw %d calls, want 0", len(calls))
+	}
+}

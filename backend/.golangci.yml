@@ -133,7 +133,7 @@ linters:
         - github.com/mrkizildag/pollux-agent/backend/internal/review.Started
         - github.com/mrkizildag/pollux-agent/backend/internal/review.ScaffoldStarted
         - github.com/mrkizildag/pollux-agent/backend/internal/review.Verdict
-        - github.com/mrkizildag/pollux-agent/backend/internal/review/pipeline.Workspace
+        - github.com/mrkizildag/pollux-agent/backend/internal/review/pipeline.Session
   exclusions:
     rules:
       - path: internal/config/

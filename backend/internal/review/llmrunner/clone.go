@@ -16,6 +16,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/mrkizildag/pollux-agent/backend/internal/review"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review/pipeline"
 )
 
@@ -64,37 +65,43 @@ func cloneAt(ctx context.Context, remoteURL, token, checkout string, alsoFetch .
 	return dir, nil
 }
 
-// openClone clones sha of owner/repo, also fetching alsoFetch, and opens its
-// root. cleanup closes the root and removes the clone; it is non-nil only when
-// err is nil.
-func (b *Backend) openClone(ctx context.Context, installationID int64, owner, repo, sha string, alsoFetch ...string) (*clone, func(), error) {
-	token, err := b.token(ctx, installationID, repo)
+// openClone clones ck.Head of ck.Owner/ck.Repo, also fetching ck.Base when it
+// is set, and opens its root. The caller closes the clone once err is nil.
+func (b *Backend) openClone(ctx context.Context, ck pipeline.Checkout) (*clone, error) {
+	token, err := b.token(ctx, ck.InstallationID, ck.Repo)
 	if err != nil {
-		return nil, nil, fmt.Errorf("get installation token: %w: %w", pipeline.ErrWorkspace, err)
+		return nil, fmt.Errorf("get installation token: %w: %w", pipeline.ErrWorkspace, err)
 	}
 
 	remoteURL := b.remote
 	if remoteURL == "" {
-		remoteURL = fmt.Sprintf("https://github.com/%s/%s.git", owner, repo)
+		remoteURL = fmt.Sprintf("https://github.com/%s/%s.git", ck.Owner, ck.Repo)
 	}
 
-	dir, err := cloneAt(ctx, remoteURL, token, sha, alsoFetch...)
+	var alsoFetch []string
+	if ck.Base != "" {
+		alsoFetch = append(alsoFetch, ck.Base)
+	}
+	dir, err := cloneAt(ctx, remoteURL, token, ck.Head, alsoFetch...)
 	if err != nil {
 		if dir != "" {
-			_ = os.RemoveAll(dir) // best-effort cleanup of a temp dir; the backend has no logger
+			_ = os.RemoveAll(dir) // best-effort removal of a temp dir the clone failed to fill
 		}
-		return nil, nil, fmt.Errorf("%w: %w", pipeline.ErrWorkspace, err)
+		return nil, fmt.Errorf("%w: %w", pipeline.ErrWorkspace, err)
 	}
 
 	root, err := os.OpenRoot(dir)
 	if err != nil {
 		_ = os.RemoveAll(dir)
-		return nil, nil, fmt.Errorf("open clone root: %w", err)
+		return nil, fmt.Errorf("open clone root: %w: %w", pipeline.ErrWorkspace, err)
 	}
-	return &clone{root: root, dir: dir, remoteURL: remoteURL, token: token}, func() {
-		_ = root.Close()
-		_ = os.RemoveAll(dir)
-	}, nil
+	return &clone{root: root, dir: dir, remoteURL: remoteURL, token: token}, nil
+}
+
+// close closes the clone's root and removes its directory.
+func (c *clone) close() {
+	_ = c.root.Close()
+	_ = os.RemoveAll(c.dir)
 }
 
 // docsAt reads docs/ at sha, which openClone fetched, straight from git
@@ -190,7 +197,7 @@ func runGitStdin(ctx context.Context, dir, remoteURL, token, stdin string, args 
 		return "", fmt.Errorf("git %v: %w", args, ctxErr)
 	}
 	if err != nil {
-		return "", fmt.Errorf("git %v: %w: %s", args, err, oneLine(stderr.String(), maxGitOutputLen))
+		return "", fmt.Errorf("git %v: %w: %s", args, err, review.OneLine(stderr.String(), maxGitOutputLen))
 	}
 	return string(out), nil
 }
@@ -211,6 +218,7 @@ func gitEnv(home, remoteURL, token string) []string {
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_TERMINAL_PROMPT=0",
+		"GIT_LITERAL_PATHSPECS=1",
 		"GIT_ALLOW_PROTOCOL=" + protocols,
 	}
 	if token != "" {

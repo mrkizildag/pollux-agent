@@ -15,7 +15,6 @@ type testRunner struct {
 	*pipeline.Sync
 	backend *llmrunner.Backend
 	limits  pipeline.Limits
-	log     *slog.Logger
 }
 
 // newRunner composes a runner over model with the default triage and draft models.
@@ -24,9 +23,9 @@ func newRunner(model llm.Model) *testRunner {
 }
 
 func newRunnerWith(model llm.Model, triageModel, draftModel string, log *slog.Logger) *testRunner {
-	backend := llmrunner.NewBackend(model, noToken, draftModel, log)
+	backend := llmrunner.NewBackend(model, noToken, draftModel)
 	sync := pipeline.NewSync(backend, llmrunner.NewJudge(model, triageModel), log)
-	return &testRunner{Sync: sync, backend: backend, limits: pipeline.ReviewLimits(), log: log}
+	return &testRunner{Sync: sync, backend: backend, limits: pipeline.ReviewLimits()}
 }
 
 // SetRemote overrides the clone's remote URL.

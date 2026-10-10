@@ -8,6 +8,7 @@ import (
 
 	"github.com/mrkizildag/pollux-agent/backend/internal/review"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review/basedocs"
+	"github.com/mrkizildag/pollux-agent/backend/internal/review/pipeline"
 )
 
 // A nested file matched by a ** covers glob reaches triage with its doc and
@@ -21,9 +22,9 @@ func TestStart_GlobCoveredNestedFileTriagesOnlyItsDoc(t *testing.T) {
 	const patch = "@@ -1,2 +1,3 @@\n package deep\n+func X() {}\n"
 	changed := review.ChangedFile{Path: "src/pkg/deep/x.go", Hunks: []review.LineRange{{Start: 1, End: 3}}, Patch: patch}
 
-	a := mustAnalyze(t, ws, newJudge().on(kindTriage, triage(false)), &fakeBackend{}, changed)
+	a := mustAnalyze(t, ws, newJudge().on(pipeline.KindTriage, triage(false)), &fakeBackend{}, changed)
 	a.noImpact(t)
-	prompts := a.judge.prompts(kindTriage)
+	prompts := a.judge.prompts(pipeline.KindTriage)
 	if len(a.judge.asked) != 1 {
 		t.Fatalf("judge saw %d questions, want exactly 1 triage call (docs/a.md only)", len(a.judge.asked))
 	}
@@ -55,7 +56,7 @@ func TestStart_DocThatDropsItsCoversInThePRIsStillTriagedFromHead(t *testing.T) 
 				baseDoc("docs/x.md", docWithCovers("\n  - main.go", "old behavior.")).
 				headFile("docs/x.md", docWithCovers(tc.covers, "head-only body."))
 
-			a := mustAnalyze(t, ws, newJudge().on(kindTriage, triage(false)), &fakeBackend{})
+			a := mustAnalyze(t, ws, newJudge().on(pipeline.KindTriage, triage(false)), &fakeBackend{})
 			if len(a.judge.asked) != 1 {
 				t.Fatalf("judge saw %d questions, want 1 triage call for docs/x.md", len(a.judge.asked))
 			}
@@ -83,7 +84,7 @@ func TestStart_DocAddedByThePRIsNotACandidate(t *testing.T) {
 			headFile("docs/x.md", docWithCovers(" []", "x body.")).
 			headFile("docs/new.md", docWithCovers("\n  - main.go", "new body."))
 
-		a := mustAnalyze(t, ws, newJudge().on(kindTriage, triage(false)), &fakeBackend{})
+		a := mustAnalyze(t, ws, newJudge().on(pipeline.KindTriage, triage(false)), &fakeBackend{})
 		if len(a.judge.asked) != 1 {
 			t.Fatalf("judge saw %d questions, want 1 triage call for docs/x.md only", len(a.judge.asked))
 		}
@@ -100,9 +101,9 @@ func TestStart_DocAddedByThePRIsNotACandidate(t *testing.T) {
 			doc("docs/other.md", docWithCovers("\n  - other.go", "other.")).
 			headFile("docs/new.md", docWithCovers("\n  - main.go", "new."))
 
-		a := mustAnalyze(t, ws, newJudge().on(kindNewDoc, newDoc(false)), &fakeBackend{})
+		a := mustAnalyze(t, ws, newJudge().on(pipeline.KindNewDoc, newDoc(false)), &fakeBackend{})
 		a.noImpact(t)
-		if len(a.judge.asked) != 1 || a.judge.asked[0].kind != kindNewDoc {
+		if len(a.judge.asked) != 1 || a.judge.asked[0].kind != pipeline.KindNewDoc {
 			t.Fatalf("judge saw %+v, want only the new-doc decision (docs/new.md is not a candidate)", a.judge.asked)
 		}
 		if prompt := a.judge.asked[0].prompt; !strings.Contains(prompt, "main.go") {
@@ -118,7 +119,7 @@ func TestStart_RenamedCoveringDocIsTriagedAtItsNewPath(t *testing.T) {
 		baseDoc("docs/x.md", xDoc).
 		headFile("docs/renamed.md", docWithCovers("\n  - main.go", "renamed body."))
 
-	a := mustAnalyze(t, ws, newJudge().on(kindTriage, triage(false)), &fakeBackend{},
+	a := mustAnalyze(t, ws, newJudge().on(pipeline.KindTriage, triage(false)), &fakeBackend{},
 		mainGoChange(), review.ChangedFile{Path: "docs/renamed.md", PreviousPath: "docs/x.md"})
 	if len(a.judge.asked) != 1 {
 		t.Fatalf("judge saw %d questions, want 1 triage call for docs/renamed.md", len(a.judge.asked))
@@ -134,8 +135,8 @@ func TestStart_RenameMatchesDocCoveringOnlyOldPath(t *testing.T) {
 	changed := mainGoChange()
 	changed.Path, changed.PreviousPath = "renamed.go", "main.go"
 
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindTriage, triage(false)), &fakeBackend{}, changed)
-	if len(a.judge.asked) != 1 || a.judge.asked[0].kind != kindTriage {
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, triage(false)), &fakeBackend{}, changed)
+	if len(a.judge.asked) != 1 || a.judge.asked[0].kind != pipeline.KindTriage {
 		t.Fatalf("judge saw %+v, want 1 triage call for docs/x.md", a.judge.asked)
 	}
 }
@@ -264,7 +265,7 @@ func TestStart_DocWithBrokenFrontmatterAtHeadIsStillTriaged(t *testing.T) {
 	proposal := proposalFor("docs/x.md", 2)
 	proposal["section"] = "Mid"
 
-	a := mustAnalyze(t, ws, newJudge().on(kindTriage, triage(true)).on(kindVerify, verify(true)),
+	a := mustAnalyze(t, ws, newJudge().on(pipeline.KindTriage, triage(true)).on(pipeline.KindVerify, verify(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(proposal)}})
 	if prompt := a.judge.asked[0].prompt; !strings.Contains(prompt, "no frontmatter anymore.") {
 		t.Errorf("triage prompt = %q, want the raw head text of docs/x.md", prompt)
@@ -283,7 +284,7 @@ func TestStart_EditedCandidateIsQuotedAtHeadNotBase(t *testing.T) {
 	proposal := proposalFor("docs/x.md", 2)
 	proposal["section"] = "Mid"
 
-	a := mustAnalyze(t, ws, newJudge().on(kindTriage, triage(true)).on(kindVerify, verify(true)),
+	a := mustAnalyze(t, ws, newJudge().on(pipeline.KindTriage, triage(true)).on(pipeline.KindVerify, verify(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(proposal)}})
 	if want := "## Mid\nhead mid text\n\n"; a.proposals(t, 1)[0].Original != want {
 		t.Errorf("Original = %q, want head text %q", a.proposals(t, 1)[0].Original, want)
@@ -294,8 +295,8 @@ func TestStart_DocsFileAtHeadIsAbsentReadme(t *testing.T) {
 	t.Parallel()
 
 	ws := newWorkspace().at("docs", file("not a directory\n"))
-	a := mustAnalyze(t, ws, newJudge().on(kindNewDoc, newDoc(false)), &fakeBackend{}, otherGoChange())
-	if len(a.judge.asked) != 1 || a.judge.asked[0].kind != kindNewDoc {
+	a := mustAnalyze(t, ws, newJudge().on(pipeline.KindNewDoc, newDoc(false)), &fakeBackend{}, otherGoChange())
+	if len(a.judge.asked) != 1 || a.judge.asked[0].kind != pipeline.KindNewDoc {
 		t.Fatalf("judge saw %+v, want exactly 1 new-doc decision", a.judge.asked)
 	}
 }

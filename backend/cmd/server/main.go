@@ -191,7 +191,7 @@ func buildRunners(cfg config.Config, ghClient *github.Client, logger *slog.Logge
 		return gate.Runners{}, fmt.Errorf("build LLM model: %w", err)
 	}
 
-	backend := llmrunner.NewBackend(model, ghClient.InstallationToken, cfg.LLM.Model, logger)
+	backend := llmrunner.NewBackend(model, ghClient.InstallationToken, cfg.LLM.Model)
 	runner := pipeline.NewSync(backend, llmrunner.NewJudge(model, cfg.LLM.TriageModel), logger)
 	return gate.Runners{Actions: actionsRunner, Server: runner}, nil
 }

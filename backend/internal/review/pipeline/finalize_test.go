@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/mrkizildag/pollux-agent/backend/internal/review"
+	"github.com/mrkizildag/pollux-agent/backend/internal/review/pipeline"
 )
 
 func TestStart_SectionWithHashesIsNormalized(t *testing.T) {
@@ -13,7 +14,7 @@ func TestStart_SectionWithHashesIsNormalized(t *testing.T) {
 
 	p := proposalFor("docs/x.md", 2)
 	p["section"] = "## X"
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindTriage, triage(true)).on(kindVerify, verify(true)),
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, triage(true)).on(pipeline.KindVerify, verify(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(p)}})
 	if got := a.proposals(t, 1)[0].Section; got != "X" {
 		t.Fatalf("Section = %q, want \"X\"", got)
@@ -69,7 +70,7 @@ func TestStart_ProposalCarriesOriginalSectionAndLines(t *testing.T) {
 			proposal := proposalFor("docs/x.md", 2)
 			proposal["section"] = tc.section
 			ws := xWorkspace().headFile("docs/x.md", tc.doc)
-			a := mustAnalyze(t, ws, newJudge().on(kindTriage, triage(true)).on(kindVerify, verify(true)),
+			a := mustAnalyze(t, ws, newJudge().on(pipeline.KindTriage, triage(true)).on(pipeline.KindVerify, verify(true)),
 				&fakeBackend{submissions: []json.RawMessage{submit(proposal)}})
 			got := a.proposals(t, 1)[0]
 			if got.Original != tc.want || got.Lines != tc.wantLines {
@@ -89,7 +90,7 @@ func TestStart_SectionEditOfDocWithBrokenFrontmatterAtHeadCarriesOriginal(t *tes
 	t.Parallel()
 
 	ws := xWorkspace().headFile("docs/x.md", "---\ntitle: [unclosed\n---\n# Top\n\n## X\nold behavior.\n")
-	a := mustAnalyze(t, ws, newJudge().on(kindTriage, triage(true)).on(kindVerify, verify(true)),
+	a := mustAnalyze(t, ws, newJudge().on(pipeline.KindTriage, triage(true)).on(pipeline.KindVerify, verify(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit(proposalFor("docs/x.md", 2))}})
 	p := a.proposals(t, 1)[0]
 	if !strings.Contains(p.Original, "old behavior.") || p.Lines == (review.LineRange{}) {
@@ -100,7 +101,7 @@ func TestStart_SectionEditOfDocWithBrokenFrontmatterAtHeadCarriesOriginal(t *tes
 func TestStart_DraftThatProposesNothingIsNoImpactFromTheDraftModel(t *testing.T) {
 	t.Parallel()
 
-	a := mustAnalyze(t, xWorkspace(), newJudge().on(kindTriage, triage(true)),
+	a := mustAnalyze(t, xWorkspace(), newJudge().on(pipeline.KindTriage, triage(true)),
 		&fakeBackend{submissions: []json.RawMessage{submit()}})
 	if got := a.noImpact(t).Reason; got != "model proposed no doc changes" {
 		t.Errorf("Reason = %q, want %q", got, "model proposed no doc changes")

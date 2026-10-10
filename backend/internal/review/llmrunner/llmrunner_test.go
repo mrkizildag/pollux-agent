@@ -3,18 +3,15 @@ package llmrunner_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/mrkizildag/pollux-agent/backend/internal/llm"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review"
-	"github.com/mrkizildag/pollux-agent/backend/internal/review/pipeline"
 )
 
 // fakeModel scripts one llm.Response (or error) per call, in order, and
@@ -150,48 +147,11 @@ func newDocProposal(covers string) map[string]any {
 	}
 }
 
-func TestStart_TokenBudgetExceededDuringTriage(t *testing.T) {
-	t.Parallel()
-
-	model := &fakeModel{script: []func(llm.Request) (llm.Response, error){
-		func(llm.Request) (llm.Response, error) {
-			return llm.Response{Text: `{"impacted": false, "reason": "x"}`, Usage: llm.Usage{InputTokens: 100}}, nil
-		},
-	}}
-
-	repoDir, headSHA := newGitRepo(t)
-	runner := newRunner(model)
-	runner.SetRemote(repoDir)
-	runner.SetTokenBudget(10)
-
-	_, err := runner.Start(t.Context(), testRequest(headSHA))
-	if !errors.Is(err, pipeline.ErrLimit) {
-		t.Fatalf("Start() = %v, want errors.Is pipeline.ErrLimit", err)
-	}
-}
-
 type blockingModel struct{}
 
 func (blockingModel) Complete(ctx context.Context, _ llm.Request) (llm.Response, error) {
 	<-ctx.Done()
 	return llm.Response{}, fmt.Errorf("blocking model: %w", ctx.Err())
-}
-
-func TestStart_DeadlineIsErrDeadline(t *testing.T) {
-	t.Parallel()
-
-	repoDir, headSHA := newGitRepo(t)
-	runner := newRunner(blockingModel{})
-	runner.SetRemote(repoDir)
-	runner.SetTimeout(200 * time.Millisecond)
-
-	_, err := runner.Start(t.Context(), testRequest(headSHA))
-	if !errors.Is(err, pipeline.ErrTimeout) {
-		t.Fatalf("Start() = %v, want errors.Is pipeline.ErrTimeout", err)
-	}
-	if errors.Is(err, context.Canceled) {
-		t.Errorf("Start() = %v, must not match context.Canceled", err)
-	}
 }
 
 func TestStart_RejectsHeadSHAThatIsNotAFullObjectID(t *testing.T) {

@@ -15,9 +15,10 @@ import (
 )
 
 // Sync implements review.Runner and review.Scaffolder: a small-model triage
-// per candidate doc, then a backend task that drafts proposals, then a
-// verification of each; and a backend task that scaffolds a repo's docs. Candidates are the docs whose covers at the base commit
-// match the changed files, so a PR can't opt a doc out by editing its own covers.
+// per candidate doc, a backend task that drafts proposals, and a verification
+// of each; and a backend task that scaffolds a repo's docs. Candidates are the
+// docs whose covers at the base commit match the changed files, so a PR can't
+// opt a doc out by editing its own covers.
 type Sync struct {
 	backend Backend
 	judge   Judge
@@ -56,20 +57,21 @@ func (s *Sync) Start(ctx context.Context, req review.Request) (review.Started, e
 	ctx, cancel := context.WithTimeout(ctx, s.limits.Deadline)
 	defer cancel()
 
-	res, meter, err := s.analyze(ctx, req)
+	meter := NewMeter(s.limits.Tokens)
+	res, err := s.analyze(ctx, req, log, meter)
 	if err != nil {
-		failed := Failed(fmt.Errorf("start analysis %s/%s#%d: %w", req.Owner, req.Repo, req.Number, err))
-		logDone(log, review.Result{}, meter, failed)
-		return nil, failed
+		failure := failed(fmt.Errorf("start analysis %s/%s#%d: %w", req.Owner, req.Repo, req.Number, err))
+		logDone(log, review.Result{}, meter, failure)
+		return nil, failure
 	}
 	logDone(log, res, meter, nil)
 	return res, nil
 }
 
 // logDone writes the one summary record of a finished analysis.
-func logDone(log *slog.Logger, res review.Result, m *Meter, failed *review.FailedError) {
-	attrs := doneAttrs(res.Model, m, failed)
-	if failed == nil {
+func logDone(log *slog.Logger, res review.Result, m *Meter, failure *review.FailedError) {
+	attrs := doneAttrs(res.Model, m, failure)
+	if failure == nil {
 		outcome := "no_impact"
 		if isProposals(res.Verdict) {
 			outcome = "proposals"
@@ -82,7 +84,7 @@ func logDone(log *slog.Logger, res review.Result, m *Meter, failed *review.Faile
 // doneAttrs are the summary attrs both runs share: the model, the token totals
 // and, for a failure, its outcome and cause. They never carry file content or
 // model text.
-func doneAttrs(model string, m *Meter, failed *review.FailedError) []any {
+func doneAttrs(model string, m *Meter, failure *review.FailedError) []any {
 	var tokens review.Tokens
 	if u := m.Usage(); u != nil {
 		tokens = *u.Tokens
@@ -94,8 +96,8 @@ func doneAttrs(model string, m *Meter, failed *review.FailedError) []any {
 		"cache_read_tokens", tokens.CacheRead,
 		"cache_write_tokens", tokens.CacheWrite,
 	}
-	if failed != nil {
-		attrs = append(attrs, "outcome", "failed", "cause", string(failed.Cause))
+	if failure != nil {
+		attrs = append(attrs, "outcome", "failed", "cause", string(failure.Cause))
 	}
 	return attrs
 }
@@ -105,8 +107,8 @@ func isProposals(v review.Verdict) bool {
 	return ok
 }
 
-// Failed classifies err into the *review.FailedError a runner returns.
-func Failed(err error) *review.FailedError {
+// failed classifies err into the *review.FailedError a runner returns.
+func failed(err error) *review.FailedError {
 	if errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, ErrTimeout) {
 		err = fmt.Errorf("%w: %w", ErrTimeout, err)
 	}
@@ -136,62 +138,62 @@ func noImpact(reason, model string, m *Meter) review.Result {
 	return review.Result{Model: model, Verdict: review.NoImpact{Reason: reason}, Usage: m.Usage()}
 }
 
-func (s *Sync) analyze(ctx context.Context, req review.Request) (review.Result, *Meter, error) {
-	ws, cleanup, err := s.backend.Open(ctx, Checkout{
+func (s *Sync) analyze(ctx context.Context, req review.Request, log *slog.Logger, meter *Meter) (review.Result, error) {
+	session, err := s.backend.Open(ctx, Checkout{
 		InstallationID: req.InstallationID, Owner: req.Owner, Repo: req.Repo, Head: req.HeadSHA, Base: req.BaseSHA,
 	})
 	if err != nil {
-		return review.Result{}, nil, fmt.Errorf("open checkout: %w", err)
+		return review.Result{}, fmt.Errorf("open checkout: %w", err)
 	}
-	defer cleanup()
+	defer session.Close()
 
-	selection, err := selectAtBase(ctx, ws, req)
+	selection, err := selectAtBase(ctx, session, req)
 	if err != nil {
-		return review.Result{}, nil, err
+		return review.Result{}, err
 	}
 	if len(selection.Restores) > 0 {
-		return review.Result{Verdict: review.Proposals(selection.Restores)}, nil, nil
+		return review.Result{Verdict: review.Proposals(selection.Restores)}, nil
 	}
 	in := input.New(req, selection)
 	if len(in.Candidates) == 0 && len(in.Uncovered) == 0 {
-		return noImpact(basedocs.NothingToReview, "", nil), nil, nil
+		return noImpact(basedocs.NothingToReview, "", nil), nil
 	}
 	if len(in.Candidates) > basedocs.MaxCandidates {
-		return review.Result{}, nil, fmt.Errorf("%w: %d candidate docs exceed the cap of %d", errTooManyCandidates, len(in.Candidates), basedocs.MaxCandidates)
+		return review.Result{}, fmt.Errorf("%w: %d candidate docs exceed the cap of %d", errTooManyCandidates, len(in.Candidates), basedocs.MaxCandidates)
 	}
-	candidates, err := candidateDocs(ctx, ws, in.Candidates)
+	candidates, err := candidateDocs(ctx, session, in.Candidates)
 	if err != nil {
-		return review.Result{}, nil, fmt.Errorf("docs of %s: %w", req.HeadSHA, err)
+		return review.Result{}, fmt.Errorf("docs of %s: %w", req.HeadSHA, err)
 	}
 
-	r, err := s.newRun(ws, req)
+	r, err := s.newRun(session, req, log, meter)
 	if err != nil {
-		return review.Result{}, nil, err
+		return review.Result{}, err
 	}
-	res, err := r.decide(ctx, req, selection, in, candidates)
-	return res, r.meter, err
+	rules := finalize.Rules{Changed: req.ChangedFiles, Selection: &selection, Repo: req.Owner + "/" + req.Repo}
+	return r.decide(ctx, in, candidates, rules)
 }
 
-// decide runs the model stages over the selected candidates.
-func (r run) decide(ctx context.Context, req review.Request, selection basedocs.Selection, in input.Input, candidates []docs.Doc) (review.Result, error) {
+// decide runs the model stages over the selected candidates. It sets
+// rules.AllowNewDoc from the new-doc stage.
+func (r run) decide(ctx context.Context, in input.Input, candidates []docs.Doc, rules finalize.Rules) (review.Result, error) {
 	triageModel := r.s.judge.Model()
 
 	impacted, reasons, err := r.triageAll(ctx, candidates)
 	if err != nil {
 		return review.Result{}, err
 	}
-	allowNewDoc := false
 	if len(in.Uncovered) > 0 {
 		var why string
-		allowNewDoc, why, err = r.newDocAllowed(ctx, in.Uncovered)
+		rules.AllowNewDoc, why, err = r.newDocAllowed(ctx, in.Uncovered)
 		if err != nil {
 			return review.Result{}, err
 		}
-		if !allowNewDoc {
+		if !rules.AllowNewDoc {
 			reasons = append(reasons, "no doc covers "+strings.Join(in.Uncovered, ", ")+"; no new doc needed: "+why)
 		}
 	}
-	if len(impacted) == 0 && !allowNewDoc {
+	if len(impacted) == 0 && !rules.AllowNewDoc {
 		prefix := ""
 		if len(in.Candidates) > 0 {
 			prefix = "no candidate doc is affected: "
@@ -200,10 +202,9 @@ func (r run) decide(ctx context.Context, req review.Request, selection basedocs.
 	}
 
 	prompt := draftPrompt{impacted: impacted, files: in.Files}
-	if allowNewDoc {
+	if rules.AllowNewDoc {
 		prompt.newDocFiles = in.Uncovered
 	}
-	rules := finalize.Rules{Changed: req.ChangedFiles, Selection: &selection, Repo: req.Owner + "/" + req.Repo, AllowNewDoc: allowNewDoc}
 	proposals, model, err := r.draft(ctx, rules, prompt)
 	if err != nil {
 		return review.Result{}, err
@@ -224,8 +225,8 @@ func (r run) decide(ctx context.Context, req review.Request, selection basedocs.
 
 // selectAtBase picks the candidate docs and uncovered files from the docs at
 // the PR's merge base.
-func selectAtBase(ctx context.Context, ws Workspace, req review.Request) (basedocs.Selection, error) {
-	baseFS, err := ws.BaseDocs(ctx)
+func selectAtBase(ctx context.Context, session Session, req review.Request) (basedocs.Selection, error) {
+	baseFS, err := session.BaseDocs(ctx)
 	if err != nil {
 		return basedocs.Selection{}, fmt.Errorf("%w: %w", ErrWorkspace, err)
 	}
