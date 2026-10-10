@@ -15,7 +15,10 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/google/jsonschema-go/jsonschema"
 
 	"github.com/mrkizildag/pollux-agent/backend/internal/docs"
 	"github.com/mrkizildag/pollux-agent/backend/internal/review"
@@ -99,6 +102,7 @@ type Runner struct {
 	api             WorkflowAPI
 	timeout         time.Duration
 	scaffoldTimeout time.Duration
+	resultSchema    func() (*jsonschema.Resolved, error)
 }
 
 var (
@@ -109,7 +113,7 @@ var (
 // New returns a Runner that dispatches through api and gives each review run
 // timeout and each scaffold run scaffoldTimeout to complete.
 func New(api WorkflowAPI, timeout, scaffoldTimeout time.Duration) *Runner {
-	return &Runner{api: api, timeout: timeout, scaffoldTimeout: scaffoldTimeout}
+	return &Runner{api: api, timeout: timeout, scaffoldTimeout: scaffoldTimeout, resultSchema: sync.OnceValues(loadResultSchema)}
 }
 
 // Start computes the candidate docs from the PR's base commit and dispatches
@@ -218,7 +222,8 @@ func (r *Runner) CollectScaffold(ctx context.Context, c review.Completion) (revi
 // Collect decodes the completed run's result artifact. It returns
 // *review.InvalidResultError when the artifact is for another head or
 // dispatch, reports an error, or holds a malformed result or a proposal
-// outside the PR's docs or diff. Failing to list the PR's files is transient
+// outside docs/. Proposal-local validation failures are dropped if valid
+// proposals remain. Failing to list the PR's files is transient
 // and returned as an ordinary error.
 func (r *Runner) Collect(ctx context.Context, c review.Completion) (review.Result, error) {
 	raw, err := r.api.ResultArtifact(ctx, c.InstallationID, c.Owner, c.Repo, c.RunID)
@@ -226,14 +231,40 @@ func (r *Runner) Collect(ctx context.Context, c review.Completion) (review.Resul
 		return review.Result{}, fmt.Errorf("collect actions run %d of %s/%s: %w", c.RunID, c.Owner, c.Repo, err)
 	}
 
-	var art Artifact[review.StructuredOutput]
+	var art Artifact[json.RawMessage]
 	if err := json.Unmarshal(raw, &art); err != nil {
 		return review.Result{}, &review.InvalidResultError{Cause: fmt.Errorf("decode result artifact: %w", err)}
 	}
 
-	out, err := art.output(c)
+	rawOutput, err := art.output(c)
 	if err != nil {
 		return review.Result{}, &review.InvalidResultError{Cause: err}
+	}
+
+	schema, err := r.resultSchema()
+	if err != nil {
+		return review.Result{}, fmt.Errorf("load actions result schema: %w", err)
+	}
+	var instance any
+	if err := json.Unmarshal(*rawOutput, &instance); err != nil {
+		return review.Result{}, &review.InvalidResultError{Cause: errors.New("decode structured output")}
+	}
+	if err := schema.Validate(instance); err != nil {
+		// Schema errors can contain raw values; keep the artifact out of error text.
+		return review.Result{}, &review.InvalidResultError{Cause: errors.New("structured output does not match the result schema")}
+	}
+	var out review.StructuredOutput
+	if err := json.Unmarshal(*rawOutput, &out); err != nil {
+		// Typed decoding also checks numbers without float64 rounding.
+		return review.Result{}, &review.InvalidResultError{Cause: errors.New("decode structured output fields")}
+	}
+	if len(out.Proposals) > finalize.MaxProposals {
+		return review.Result{}, &review.InvalidResultError{Cause: fmt.Errorf("too many proposals: %d, max %d", len(out.Proposals), finalize.MaxProposals)}
+	}
+	for i, p := range out.Proposals {
+		if err := review.ValidateDocPath(p.DocPath); err != nil {
+			return review.Result{}, &review.InvalidResultError{Cause: fmt.Errorf("proposal %d: %s", i, capText(err.Error()))}
+		}
 	}
 
 	result := review.Result{Model: art.Claude.model(), Usage: art.Claude.reviewUsage()}
@@ -264,11 +295,42 @@ func (r *Runner) Collect(ctx context.Context, c review.Completion) (review.Resul
 	if err != nil {
 		return review.Result{}, fmt.Errorf("collect actions run %d of %s/%s: %w", c.RunID, c.Owner, c.Repo, err)
 	}
-	if len(problems) > 0 {
+	rejected := make(map[int]bool, len(problems))
+	for _, problem := range problems {
+		if !rejected[problem.Index] {
+			rejected[problem.Index] = true
+			result.Dropped = append(result.Dropped, review.DroppedProposal{Index: problem.Index, Reason: capText(problem.Err.Error())})
+		}
+	}
+	kept := make(review.Proposals, 0, len(proposals)-len(rejected))
+	for i, p := range proposals {
+		if !rejected[i] {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == 0 {
 		return review.Result{}, &review.InvalidResultError{Cause: errors.New(capTo(problems.Error(), maxProblemsText))}
 	}
-	result.Verdict = review.Proposals(proposals)
+	result.Verdict = kept
 	return result, nil
+}
+
+// The static schema checks the artifact's structure. Per-PR anchor ranges and
+// new-doc rules remain proposal-local checks in finalize.
+func loadResultSchema() (*jsonschema.Resolved, error) {
+	raw, err := review.ResultSchema()
+	if err != nil {
+		return nil, fmt.Errorf("generate result schema: %w", err)
+	}
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return nil, fmt.Errorf("decode result schema: %w", err)
+	}
+	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		return nil, fmt.Errorf("resolve result schema: %w", err)
+	}
+	return resolved, nil
 }
 
 // headAt reads the PR's head commit through the workflow API.

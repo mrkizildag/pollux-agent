@@ -866,6 +866,7 @@ func TestOpen_BackfillsArmedRunsWhenMigratingToAnalysisHistory(t *testing.T) {
 	if _, err := db.ExecContext(t.Context(), `DROP TABLE analyses; DROP TABLE pr_events; DROP TABLE login_attempts; DROP TABLE sessions;
 		ALTER TABLE pull_requests DROP COLUMN run_started_at;
 		ALTER TABLE pull_requests DROP COLUMN run_runner;
+		ALTER TABLE pull_requests DROP COLUMN dropped_proposals;
 		INSERT INTO pull_requests (owner, repo, number, installation_id, head_sha) VALUES ('acme', 'widgets', 7, 1, 'sha0');
 		INSERT INTO pull_requests (owner, repo, number, installation_id, head_sha, run_id, run_nonce, run_deadline) VALUES ('acme', 'widgets', 8, 1, 'sha0', 99, 'n-actions', '2026-01-02T03:04:05Z');
 		INSERT INTO pull_requests (owner, repo, number, installation_id, head_sha, run_id, run_nonce, run_deadline) VALUES ('acme', 'widgets', 9, 1, 'sha0', 0, 'n-unknown', '2026-01-02T03:04:05Z');
@@ -889,6 +890,9 @@ func TestOpen_BackfillsArmedRunsWhenMigratingToAnalysisHistory(t *testing.T) {
 		}
 		if state.Run == nil || state.Run.Runner != want {
 			t.Errorf("LoadPR(%d).Run = %+v, want runner %q", number, state.Run, want)
+		}
+		if len(state.Dropped) != 0 {
+			t.Errorf("LoadPR(%d).Dropped = %+v, want no notice for a pre-history row", number, state.Dropped)
 		}
 	}
 	if state, err := store.LoadPR(t.Context(), "acme", "widgets", 7); err != nil || state.Run != nil {

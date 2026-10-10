@@ -353,6 +353,33 @@ func escapeBlockStart(line string) string {
 	return line
 }
 
+// droppedNotice renders diagnostic text as one inert line and never truncates
+// inside escaped prose or a model-supplied code span.
+func droppedNotice(dropped []review.DroppedProposal) string {
+	dropped = boundedDropped(dropped)
+	if len(dropped) == 0 {
+		return ""
+	}
+	noun := "proposals"
+	if len(dropped) == 1 {
+		noun = "proposal"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Dropped %d %s: ", len(dropped), noun)
+	for i, d := range dropped {
+		reason := inertProse(d.Reason)
+		if b.Len()+len(reason)+2 > 4096-64 {
+			fmt.Fprintf(&b, "; … and %d more reasons", len(dropped)-i)
+			break
+		}
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		b.WriteString(reason)
+	}
+	return b.String()
+}
+
 // renderSummary is the summary comment body: a heading (the failure cause when
 // the last analysis failed, else the open proposal count), one row per proposal
 // in state, then the PR-wide checkboxes redrawn from state. Re-run is offered
@@ -392,6 +419,9 @@ func renderSummary(state PRState) string {
 		default:
 			fmt.Fprintf(&b, "**pollux-agent** proposes %d doc %s.\n\n", open, noun)
 		}
+	}
+	if notice := droppedNotice(state.Dropped); notice != "" {
+		b.WriteString(notice + "\n\n")
 	}
 	if len(state.Proposals) > 0 {
 		b.WriteString("| Doc | Section | Comment | State |\n| --- | --- | --- | --- |\n")

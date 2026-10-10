@@ -293,13 +293,16 @@ func (s *savedStore) SavePR(ctx context.Context, state gate.PRState, history gat
 // fakeActionsGitHub serves the GitHub API surface of a repo with the pollux-agent
 // workflow, recording the dispatch and check run requests.
 type fakeActionsGitHub struct {
-	t       *testing.T
-	created chan map[string]any
-	updated chan map[string]any
+	t          *testing.T
+	created    chan map[string]any
+	updated    chan map[string]any
+	reviewed   chan map[string]any
+	summarized chan map[string]any
 
-	mu         sync.Mutex
-	dispatched map[string]any
-	blobURL    string
+	mu          sync.Mutex
+	dispatched  map[string]any
+	blobURL     string
+	reviewCount int
 }
 
 func (f *fakeActionsGitHub) json(w http.ResponseWriter, status int, body string) {
@@ -329,10 +332,15 @@ func (f *fakeActionsGitHub) resultZip() []byte {
 		"claude": map[string]any{
 			"is_error": false,
 			"structured_output": map[string]any{
+				"no_impact_reason": "",
 				"proposals": []any{map[string]any{
 					"doc_path": "docs/features/greeting.md", "section": "Greeting",
 					"anchor": map[string]any{"file": "src/greet.py", "line": 3},
 					"reason": "greeting changed", "content": "Hello!",
+				}, map[string]any{
+					"doc_path": "docs/features/greeting.md", "section": "Greeting",
+					"anchor": map[string]any{"file": "src/greet.py", "line": 99},
+					"reason": "invalid sibling", "content": "REJECTED CONTENT MUST NOT BE POSTED",
 				}},
 			},
 		},
@@ -358,6 +366,31 @@ func (f *fakeActionsGitHub) resultZip() []byte {
 
 func (f *fakeActionsGitHub) handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /app", func(w http.ResponseWriter, _ *http.Request) {
+		f.json(w, http.StatusOK, `{"slug":"pollux-agent"}`)
+	})
+	mux.HandleFunc("GET /repos/acme/widgets/pulls/{number}/comments", func(w http.ResponseWriter, _ *http.Request) {
+		f.json(w, http.StatusOK, `[]`)
+	})
+	mux.HandleFunc("GET /repos/acme/widgets/issues/{number}/comments", func(w http.ResponseWriter, _ *http.Request) {
+		f.json(w, http.StatusOK, `[]`)
+	})
+	mux.HandleFunc("POST /repos/acme/widgets/pulls/{number}/comments", func(w http.ResponseWriter, r *http.Request) {
+		body := f.decode(r)
+		f.mu.Lock()
+		f.reviewCount++
+		f.mu.Unlock()
+		f.reviewed <- body
+		f.json(w, http.StatusCreated, `{"id":701,"html_url":"https://github.com/acme/widgets/pull/1#discussion_r701"}`)
+	})
+	mux.HandleFunc("POST /repos/acme/widgets/issues/{number}/comments", func(w http.ResponseWriter, r *http.Request) {
+		f.summarized <- f.decode(r)
+		f.json(w, http.StatusCreated, `{"id":702,"html_url":"https://github.com/acme/widgets/pull/1#issuecomment-702"}`)
+	})
+	mux.HandleFunc("PATCH /repos/acme/widgets/issues/comments/{id}", func(w http.ResponseWriter, r *http.Request) {
+		f.summarized <- f.decode(r)
+		f.json(w, http.StatusOK, `{"id":702}`)
+	})
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
 		f.json(w, http.StatusCreated, fmt.Sprintf(`{"token":"ghs_test","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339)))
 	})
@@ -465,7 +498,7 @@ func TestActionsRunnerEndToEnd(t *testing.T) {
 	})
 	store := &savedStore{Store: baseStore, saved: make(chan gate.PRState, 10)}
 
-	github := &fakeActionsGitHub{t: t, created: make(chan map[string]any, 1), updated: make(chan map[string]any, 1)}
+	github := &fakeActionsGitHub{t: t, created: make(chan map[string]any, 1), updated: make(chan map[string]any, 1), reviewed: make(chan map[string]any, 2), summarized: make(chan map[string]any, 2)}
 	srv := httptest.NewServer(github.handler())
 	t.Cleanup(srv.Close)
 	github.blobURL = srv.URL + "/blob"
@@ -555,8 +588,24 @@ func TestActionsRunnerEndToEnd(t *testing.T) {
 		t.Errorf("updated check run = %v, want completed action_required", updated)
 	}
 	output, _ := updated["output"].(map[string]any)
-	if summary, _ := output["summary"].(string); !strings.Contains(summary, "docs/features/greeting.md") {
-		t.Errorf("updated check run output = %v, want the proposal for docs/features/greeting.md", output)
+	summary, _ := output["summary"].(string)
+	if !strings.Contains(summary, "docs/features/greeting.md") || !strings.Contains(summary, "Dropped 1 proposal:") || !strings.Contains(summary, "anchor.line 99") {
+		t.Errorf("updated check run output = %v, want retained proposal and concrete drop notice", output)
+	}
+	reviewed := wait(github.reviewed, "retained proposal comment")
+	if body, _ := reviewed["body"].(string); !strings.Contains(body, "Hello!") || strings.Contains(body, "REJECTED CONTENT") {
+		t.Errorf("proposal comment = %v, want only retained content", reviewed)
+	}
+	wait(github.summarized, "summary create")
+	finalSummary := wait(github.summarized, "summary update after posting proposals")
+	if body, _ := finalSummary["body"].(string); !strings.Contains(body, "Dropped 1 proposal:") || !strings.Contains(body, "anchor.line 99") || strings.Contains(body, "REJECTED CONTENT") {
+		t.Errorf("summary comment = %v, want concrete drop notice without rejected content", finalSummary)
+	}
+	github.mu.Lock()
+	reviewCount := github.reviewCount
+	github.mu.Unlock()
+	if reviewCount != 1 {
+		t.Errorf("review comment count = %d, want exactly one", reviewCount)
 	}
 }
 

@@ -30,14 +30,14 @@ func (sc SkipScope) noun() string {
 // skipRun is the success check run for the active skip of s: pure, no I/O.
 func skipRun(s PRState) CheckRun {
 	sk := s.Skip
-	return CheckRun{
+	return withDroppedNotice(CheckRun{
 		Name:       CheckName,
 		HeadSHA:    s.HeadSHA,
 		Status:     StatusCompleted,
 		Conclusion: ConclusionSuccess,
 		Title:      fmt.Sprintf("Skipped by @%s", sk.User),
 		Summary:    truncate(fmt.Sprintf("@%s skipped the docs check for this %s: %s", sk.User, sk.Scope.noun(), inertProse(sk.Reason)), maxSummaryBytes),
-	}
+	}, s.Dropped)
 }
 
 // OnSkip is the state transition for a skip made at the current head at now:

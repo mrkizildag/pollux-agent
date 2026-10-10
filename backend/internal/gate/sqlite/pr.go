@@ -20,19 +20,27 @@ func (s *Store) LoadPR(ctx context.Context, owner, repo string, number int) (gat
 	var deadline, startedAt string
 	row := s.db.QueryRowContext(ctx,
 		`SELECT installation_id, head_sha, check_run_id, run_id, run_nonce, run_deadline, run_base_sha, run_started_at, run_runner, summary_comment_id, head_ref, proposals_sha,
-			fork, pending_skip_user, pending_skip_scope, skip_user, skip_scope, skip_reason, skip_head_sha, failure_cause, pending_apply
+			fork, pending_skip_user, pending_skip_scope, skip_user, skip_scope, skip_reason, skip_head_sha, failure_cause, pending_apply, dropped_proposals
 		FROM pull_requests WHERE owner = ? AND repo = ? AND number = ?`,
 		owner, repo, number)
 
 	var pending gate.SkipAsk
 	var skip gate.Skip
-	var pendingApply string
+	var pendingApply, dropped string
 	if err := row.Scan(&state.InstallationID, &state.HeadSHA, &state.CheckRunID, &run.RunID, &run.Nonce, &deadline, &run.BaseSHA, &startedAt, &run.Runner, &state.SummaryCommentID, &state.HeadRef, &state.ProposalsSHA,
-		&state.Fork, &pending.User, &pending.Scope, &skip.User, &skip.Scope, &skip.Reason, &skip.HeadSHA, &state.FailureCause, &pendingApply); err != nil {
+		&state.Fork, &pending.User, &pending.Scope, &skip.User, &skip.Scope, &skip.Reason, &skip.HeadSHA, &state.FailureCause, &pendingApply, &dropped); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return state, nil
 		}
 		return gate.PRState{}, fmt.Errorf("load pr %s/%s#%d: %w", owner, repo, number, err)
+	}
+
+	if err := json.Unmarshal([]byte(dropped), &state.Dropped); err != nil {
+		return gate.PRState{}, fmt.Errorf("load pr %s/%s#%d: parse dropped proposals: %w", owner, repo, number, err)
+	}
+
+	if len(state.Dropped) == 0 {
+		state.Dropped = nil
 	}
 
 	if pending.User != "" {
@@ -116,6 +124,11 @@ func (s *Store) SavePR(ctx context.Context, state gate.PRState, history gate.His
 		}
 	}
 
+	dropped, err := json.Marshal(state.Dropped)
+	if err != nil {
+		return fmt.Errorf("save pr %s/%s#%d: encode dropped proposals: %w", state.Owner, state.Repo, state.Number, err)
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("save pr %s/%s#%d: begin: %w", state.Owner, state.Repo, state.Number, err)
@@ -124,8 +137,8 @@ func (s *Store) SavePR(ctx context.Context, state gate.PRState, history gate.His
 
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO pull_requests (owner, repo, number, installation_id, head_sha, check_run_id, run_id, run_nonce, run_deadline, run_base_sha, run_started_at, run_runner, summary_comment_id, head_ref, proposals_sha,
-			fork, pending_skip_user, pending_skip_scope, skip_user, skip_scope, skip_reason, skip_head_sha, failure_cause, pending_apply)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			fork, pending_skip_user, pending_skip_scope, skip_user, skip_scope, skip_reason, skip_head_sha, failure_cause, pending_apply, dropped_proposals)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (owner, repo, number) DO UPDATE SET
 			installation_id = excluded.installation_id,
 			head_sha = excluded.head_sha,
@@ -147,10 +160,11 @@ func (s *Store) SavePR(ctx context.Context, state gate.PRState, history gate.His
 			skip_reason = excluded.skip_reason,
 			skip_head_sha = excluded.skip_head_sha,
 			failure_cause = excluded.failure_cause,
-			pending_apply = excluded.pending_apply`,
+			pending_apply = excluded.pending_apply,
+			dropped_proposals = excluded.dropped_proposals`,
 		state.Owner, state.Repo, state.Number, state.InstallationID, state.HeadSHA,
 		state.CheckRunID, run.RunID, run.Nonce, deadline, run.BaseSHA, startedAt, run.Runner, state.SummaryCommentID, state.HeadRef, state.ProposalsSHA,
-		state.Fork, pending.User, pending.Scope, skip.User, skip.Scope, skip.Reason, skip.HeadSHA, state.FailureCause, string(pendingApply))
+		state.Fork, pending.User, pending.Scope, skip.User, skip.Scope, skip.Reason, skip.HeadSHA, state.FailureCause, string(pendingApply), string(dropped))
 	if err != nil {
 		return fmt.Errorf("save pr %s/%s#%d: %w", state.Owner, state.Repo, state.Number, err)
 	}

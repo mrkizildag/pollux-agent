@@ -81,6 +81,13 @@ type Pending struct {
 	Deadline time.Time
 }
 
+// DroppedProposal records one rejected proposal, using its original zero-based index.
+// Reason is diagnostic text from validation, never proposal content.
+type DroppedProposal struct {
+	Index  int    `json:"index"`
+	Reason string `json:"reason"`
+}
+
 // Result is a finished analysis.
 type Result struct {
 	// Model is the model that produced the verdict; empty when none ran.
@@ -88,6 +95,8 @@ type Result struct {
 	Verdict Verdict
 	// Usage is what the analysis consumed; nil when the runner did not report it.
 	Usage *Usage
+	// Dropped are proposal-local failures discarded by an Actions analysis.
+	Dropped []DroppedProposal
 }
 
 // Usage is what one analysis consumed. Tokens is nil when the runner reported

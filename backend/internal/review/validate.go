@@ -38,7 +38,9 @@ func (p Proposal) Validate(changed []ChangedFile) error {
 	return errors.Join(errs...)
 }
 
-func validateDocPath(docPath string) error {
+// ValidateDocPath checks that a proposal target is a safe, canonical docs path.
+// Actions checks every target before allowing proposal-local failures to be dropped.
+func ValidateDocPath(docPath string) error {
 	if docPath == "" {
 		return errors.New("doc_path: must not be empty")
 	}
@@ -92,7 +94,7 @@ func validateAnchor(anchor Anchor, changed []ChangedFile) error {
 func (p Proposal) ValidateTarget() error {
 	var errs []error
 
-	if err := validateDocPath(p.DocPath); err != nil {
+	if err := ValidateDocPath(p.DocPath); err != nil {
 		errs = append(errs, err)
 	}
 	if err := validateSingleLine("section", p.Section); err != nil {

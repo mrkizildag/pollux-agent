@@ -31,6 +31,7 @@ type fakeAPI struct {
 	changed    []review.ChangedFile
 	changedErr error
 	files      map[string][]byte
+	fileErr    map[string]error
 	// paths are extra non-directory paths PathAtRef reports: files FileAtRef refuses, symlinks.
 	paths map[string]bool
 	// dirs are directories PathAtRef reports besides the parents of files.
@@ -71,7 +72,7 @@ func (f *fakeAPI) FileAtRef(_ context.Context, _ int64, _, _, path, ref string) 
 	}
 	f.fileReads[path+"@"+ref]++
 	src, ok := f.files[path]
-	return src, ok, nil
+	return src, ok, f.fileErr[path]
 }
 
 func (f *fakeAPI) PathAtRef(_ context.Context, _ int64, _, _, path, _ string) (exists, dir bool, err error) {
@@ -331,6 +332,15 @@ func TestStartDispatchError(t *testing.T) {
 func artifact(t *testing.T, head, nonce string, claude map[string]any) []byte {
 	t.Helper()
 
+	// Ordinary review fixtures include the static schema's required reason,
+	// including when proposals are present. Schema rejection tests build raw artifacts.
+	if out, ok := claude["structured_output"].(map[string]any); ok {
+		if _, proposals := out["proposals"]; proposals {
+			if _, reason := out["no_impact_reason"]; !reason {
+				out["no_impact_reason"] = ""
+			}
+		}
+	}
 	b, err := json.Marshal(map[string]any{"head_sha": head, "nonce": nonce, "claude": claude})
 	if err != nil {
 		t.Fatalf("marshal artifact: %v", err)
@@ -699,7 +709,7 @@ func TestCollectCapsProposalErrorText(t *testing.T) {
 	}
 }
 
-func TestCollectNamesEveryBadProposal(t *testing.T) {
+func TestCollectRetainsValidProposalAndNamesEveryDrop(t *testing.T) {
 	t.Parallel()
 
 	missingSection := validProposal()
@@ -715,19 +725,25 @@ func TestCollectNamesEveryBadProposal(t *testing.T) {
 		files:    map[string][]byte{"docs/a.md": []byte(usageDoc)},
 	}
 
-	_, err := newRunner(api).Collect(t.Context(), review.Completion{Owner: "o", Repo: "r", HeadSHA: "abc", Nonce: "n1"})
+	got, err := newRunner(api).Collect(t.Context(), review.Completion{Owner: "o", Repo: "r", HeadSHA: "abc", Nonce: "n1"})
 
-	var invalid *review.InvalidResultError
-	if !errors.As(err, &invalid) {
-		t.Fatalf("Collect() = %v, want *review.InvalidResultError", err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, want := range []string{"proposal 1:", "proposal 2:"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("Collect() error %q, want it to contain %q", err, want)
+	proposals, ok := got.Verdict.(review.Proposals)
+	if !ok {
+		t.Fatalf("verdict = %T, want proposals", got.Verdict)
+	}
+	if len(proposals) != 1 || proposals[0].Section != "Usage" || proposals[0].Original != "## Usage\nold usage\n" {
+		t.Fatalf("retained proposals = %+v", proposals)
+	}
+	if len(got.Dropped) != 2 || got.Dropped[0].Index != 1 || got.Dropped[1].Index != 2 {
+		t.Fatalf("drops = %+v", got.Dropped)
+	}
+	for _, d := range got.Dropped {
+		if d.Reason == "" || len(d.Reason) > 203 || strings.ContainsAny(d.Reason, "\r\n") {
+			t.Errorf("unbounded drop = %+v", d)
 		}
-	}
-	if strings.Contains(err.Error(), "proposal 0:") {
-		t.Errorf("Collect() error %q names the valid proposal 0", err)
 	}
 }
 

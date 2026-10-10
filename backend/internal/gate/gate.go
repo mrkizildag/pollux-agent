@@ -150,8 +150,9 @@ type PRState struct {
 	Skip         *Skip         // active skip; nil if none
 	PendingApply *PendingApply // Apply commit being created; nil if none
 
-	SummaryCommentID int64  // 0 until the summary comment is created
-	FailureCause     string // why the last analysis failed, shown in the summary; "" when it did not
+	SummaryCommentID int64                    // 0 until the summary comment is created
+	FailureCause     string                   // why the last analysis failed, shown in the summary; "" when it did not
+	Dropped          []review.DroppedProposal // notice from the last completed analysis
 	Proposals        []ProposalState
 }
 
@@ -409,6 +410,7 @@ func OnPush(prev PRState, pr PullRequest, now time.Time) (PRState, History) {
 		ProposalsSHA:     prev.ProposalsSHA,
 		SummaryCommentID: prev.SummaryCommentID,
 		Proposals:        slices.Clone(prev.Proposals),
+		Dropped:          slices.Clone(prev.Dropped),
 	}
 	if prev.Skip != nil {
 		kept := *prev.Skip
@@ -562,6 +564,10 @@ func shortSHA(sha string) string { return sha[:min(7, len(sha))] }
 // to what GitHub accepts. An active skip replaces the outcome with its success.
 func conclude(state PRState, outcome Outcome, now time.Time) (PRState, CheckRun, History) {
 	state.FailureCause = ""
+	state.Dropped = nil
+	if outcome.Result != nil {
+		state.Dropped = boundedDropped(outcome.Result.Dropped)
+	}
 	if outcome.Failed != nil {
 		state.FailureCause = truncate(outcome.Failed.Cause, maxCauseBytes)
 	}
@@ -574,8 +580,37 @@ func conclude(state PRState, outcome Outcome, now time.Time) (PRState, CheckRun,
 		return state, skipRun(state), history
 	}
 	state, run := concludeUncapped(state, outcome)
-	run.Summary = truncate(run.Summary, maxSummaryBytes)
+	run = withDroppedNotice(run, state.Dropped)
 	return state, run, history
+}
+
+// boundedDropped owns the persisted notice bounds and counts each rejected index once.
+func boundedDropped(raw []review.DroppedProposal) []review.DroppedProposal {
+	var out []review.DroppedProposal
+	seen := map[int]bool{}
+	for _, d := range raw {
+		if d.Index < 0 || seen[d.Index] {
+			continue
+		}
+		seen[d.Index] = true
+		d.Reason = truncate(oneLine(d.Reason), 512)
+		out = append(out, d)
+		if len(out) == 20 {
+			break
+		}
+	}
+	return out
+}
+
+// withDroppedNotice reserves room for the whole bounded notice in check output.
+func withDroppedNotice(run CheckRun, dropped []review.DroppedProposal) CheckRun {
+	notice := droppedNotice(dropped)
+	if notice == "" {
+		run.Summary = truncate(run.Summary, maxSummaryBytes)
+		return run
+	}
+	run.Summary = truncate(run.Summary, maxSummaryBytes-len(notice)-2) + "\n\n" + notice
+	return run
 }
 
 // analysisOf is the record of run, awaited at head, ended as outcome says at

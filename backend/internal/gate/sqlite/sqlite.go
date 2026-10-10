@@ -206,6 +206,7 @@ func migrations() []string {
 			last_used_at INTEGER NOT NULL,
 			version INTEGER NOT NULL DEFAULT 0
 		)`,
+		`ALTER TABLE pull_requests ADD COLUMN dropped_proposals TEXT NOT NULL DEFAULT '[]'`,
 	}
 }
 

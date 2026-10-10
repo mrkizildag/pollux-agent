@@ -79,7 +79,8 @@ type readFile struct {
 }
 
 // Proposals returns the finalized proposals and every problem found (nil when
-// none); callers reject the batch on any problem. err is set only when a head
+// none). Output remains aligned with raw, including rejected proposals, so callers
+// must inspect Problems before accepting entries. err is set only when a head
 // read fails, which is transient, or when rules allow new docs without a
 // Selection. More than MaxProposals proposals yield one problem and no reads.
 func Proposals(ctx context.Context, head Head, rules Rules, raw []review.Proposal) ([]review.Proposal, Problems, error) {
