@@ -3,7 +3,7 @@ module github.com/mrkizildag/pollux-agent/backend
 go 1.26.9
 
 require (
-	github.com/bmatcuk/doublestar/v4 v4.10.2
+	github.com/bmatcuk/doublestar/v4 v4.10.3
 	github.com/bradleyfalzon/ghinstallation/v2 v2.19.0
 	github.com/google/go-cmp v0.7.0
 	github.com/google/go-github/v88 v88.0.0
